@@ -536,6 +536,7 @@ async def orchestrate(config: OrchestratorConfig):
                 clients=teacher_inference_pool.clients,
                 model_name=config.teacher_model.model.name,
                 samples=train_examples,
+                max_model_len=config.seq_len,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs

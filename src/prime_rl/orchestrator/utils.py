@@ -147,11 +147,19 @@ async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
+    max_model_len: int | None = None,
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
+
+        all_tokens = sample.prompt_ids + sample.completion_ids
+        full_len = len(all_tokens)
+
+        # Truncate to fit within teacher's context window (need room for max_tokens=1)
+        if max_model_len is not None and full_len >= max_model_len:
+            all_tokens = all_tokens[: max_model_len - 1]
 
         async with await get_semaphore():
             response = await client.post(
@@ -159,7 +167,7 @@ async def compute_teacher_logprobs(
                 body={
                     "model": model_name,
                     "messages": [{"role": "user", "content": ""}],
-                    "tokens": sample.prompt_ids + sample.completion_ids,
+                    "tokens": all_tokens,
                     "max_tokens": 1,
                     "temperature": 1.0,
                     "top_p": 1.0,
@@ -168,10 +176,16 @@ async def compute_teacher_logprobs(
                 },
                 cast_to=ChatCompletion,
             )
-        return [
+        logprobs = [
             0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
             for lp in getattr(response, "prompt_logprobs", [])
         ]
+
+        # Pad with 0.0 for truncated tokens so length matches the full sequence
+        if len(logprobs) < full_len:
+            logprobs.extend([0.0] * (full_len - len(logprobs)))
+
+        return logprobs
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 

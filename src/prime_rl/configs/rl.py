@@ -327,6 +327,9 @@ class RLConfig(BaseSettings):
         if (
             self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
         ) and not self.orchestrator.teacher_model:
+            # Allow if num_teacher_gpus is set — auto_setup_teacher_inference will configure teacher_model later
+            if self.deployment.type == "single_node" and (self.deployment.num_teacher_gpus or 0) > 0:
+                return self
             raise ValueError(
                 "teacher_model must be configured when teacher_tau > 0. "
                 "Either set teacher_tau = 0, set deployment.num_teacher_gpus, or configure teacher_model manually."
