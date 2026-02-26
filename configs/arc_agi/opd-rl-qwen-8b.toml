@@ -1,0 +1,90 @@
+max_steps = 500
+seq_len = 32768
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "arc-agi-opd"
+name = "arc-agi-repl-phase0"
+
+[ckpt]
+interval = 50
+
+# --- Trainer ---
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 0.3      # OPD distillation strength (frozen teacher)
+adv_tau = 1.0          # full RL reward signal (hybrid mode)
+
+[trainer.optim]
+lr = 1e-6
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+oversampling_factor = 2.0
+max_concurrent = 64
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 4096
+
+[[orchestrator.env]]
+id = "arc-agi"
+name = "arc-agi-repl"
+args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", reward_mode = "balanced", max_turns = 20, env_type = "repl" }
+
+[orchestrator.eval]
+interval = 100
+rollouts_per_example = 4
+num_examples = 8
+
+[[orchestrator.eval.env]]
+id = "arc-agi"
+name = "arc-agi-eval"
+args = { dataset_name = "arc-prize-2024", split = "evaluation", reward_mode = "balanced", max_turns = 20, env_type = "repl" }
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+# --- Inference (student: 8B) ---
+[inference]
+gpu_memory_utilization = 0.4
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
+
+# --- Teacher Inference (32B on 1 GPU) ---
+[teacher_inference]
+gpu_memory_utilization = 0.90
+
+[teacher_inference.server]
+port = 8032
+
+[teacher_inference.model]
+name = "willcb/Qwen3-32B"
+max_model_len = 32768
+dtype = "bfloat16"

@@ -183,6 +183,21 @@ wheels = [
 ]
 
 [[package]]
+name = "arc-agi"
+version = "0.2.1"
+source = { editable = "environments/arc_agi" }
+dependencies = [
+    { name = "numpy" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "verifiers", specifier = ">=0.1.9" },
+]
+
+[[package]]
 name = "astor"
 version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2311,6 +2326,7 @@ version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter" },
+    { name = "arc-agi" },
     { name = "beartype" },
     { name = "datasets" },
     { name = "dion" },
@@ -2365,6 +2381,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
+    { name = "arc-agi", editable = "environments/arc_agi" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
