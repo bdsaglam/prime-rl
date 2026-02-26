@@ -6,81 +6,31 @@ Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl)
 
 Fine-tune Qwen3-8B as an ARC-AGI REPL agent. The model writes Python code in a multi-turn REPL to analyze grid patterns and produce predictions. Standard RL (GRPO) with sparse rewards doesn't work well for ARC — OPD provides dense per-token feedback from a teacher model to stabilize training.
 
-## Research Documentation
+## Current State
 
-All OPD research, paper summaries, and implementation plans are in `tmp/on-policy-distillation/`. Start with:
+**Phase 0 is running.** Qwen3-8B student with Qwen3-32B frozen teacher on 4 GPUs (2 inference + 1 trainer + 1 teacher). Training config: `configs/arc_agi/opd-rl-qwen-8b.toml`. W&B project: `arc-agi-opd`.
 
-- `tmp/scratchpad.md` — Scratchpad for training ARC-AGI
-- `tmp/training-prime-rl.md` — Training guide for prime-rl
-- `tmp/on-policy-distillation/README.md` — Full index of all docs
-- `tmp/on-policy-distillation/arc-agi-opd-plan.md` — Phased plan (Phase 0–3) for prime-rl
-- `tmp/on-policy-distillation/handover.md` — Self-contained briefing with full context
-- `tmp/on-policy-distillation/opd-concepts.md` — Tutorial on OPD, all self-distillation variants
-- `tmp/on-policy-distillation/sdpo-implementation.md` — Alternative SDPO/verl approach (fallback)
-- `tmp/on-policy-distillation/research-notes/` — Deep-dive paper summaries and framework analyses
+Phase 0 required 3 bug fixes in prime-rl (documented in `tmp/on-policy-distillation/prime-rl-implementation-notes.md`):
+1. Validator ordering for `teacher_tau` + `num_teacher_gpus` (`src/prime_rl/configs/rl.py:326-336`)
+2. Teacher prefill crash on long sequences — truncation + padding (`src/prime_rl/orchestrator/utils.py:146-190`)
+3. Teacher inference port conflict when using explicit `[teacher_inference]` config
 
-## Current State: Phase 0 (OPD with frozen teacher)
+**Next:** Phase 1 — privileged-info teacher (inject ground truth into teacher prompt). Plan: `tmp/on-policy-distillation/phase1-privileged-teacher.md`.
 
-Phase 0 uses prime-rl's native OPD support with zero training loop modifications. The frozen teacher is the same Qwen3-8B checkpoint — its KL divergence acts as a regularizer preventing drift.
+## Documentation
 
-**What's done:**
-- ARC-AGI environment copied into `environments/arc_agi/` and registered as dependency
-- Training config at `configs/arc_agi/opd-rl-qwen-8b.toml`
-- Config validates with `--dump-config`
-- Bug fix in `src/prime_rl/configs/rl.py:326-336` — validator ordering for `teacher_tau` + `num_teacher_gpus`
-
-**What's next:**
-- Run Phase 0 training: `uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml`
-- Monitor W&B: teacher_kl, reward, entropy
-- If signal is weak (teacher_kl near zero), try larger teacher (Qwen3-32B on 4 GPUs)
-- Phase 1: Privileged-info self-distillation (teacher sees ground truth)
-
-## Repository Structure
-
-```
-prime-rl/
-├── src/prime_rl/
-│   ├── configs/           # Pydantic config models
-│   │   ├── rl.py          # RLConfig (top-level, deployment, shared settings)
-│   │   ├── trainer.py     # TrainerConfig, LossConfig, LoRAConfig, OptimizerConfig
-│   │   ├── orchestrator.py # OrchestratorConfig, EnvConfig, EvalConfig, SamplingConfig
-│   │   └── inference.py   # InferenceConfig, vLLM server settings
-│   ├── entrypoints/
-│   │   └── rl.py          # Main entry point — launches all processes
-│   ├── trainer/rl/
-│   │   ├── train.py       # Training loop
-│   │   └── loss.py        # Loss function (teacher_tau KL + adv_tau GRPO)
-│   ├── orchestrator/
-│   │   ├── orchestrator.py     # Orchestrator main loop
-│   │   ├── trajectories.py     # interleave_rollout() — multi-turn merging
-│   │   └── utils.py            # Teacher logprob computation (lines 146-176)
-│   └── inference/
-│       └── server.py      # vLLM inference server
-├── environments/
-│   └── arc_agi/           # ARC-AGI REPL environment (copied from rlvr)
-│       ├── src/arc_agi/
-│       │   ├── env.py     # load_environment() entry point
-│       │   ├── data.py    # Dataset loading
-│       │   ├── rewards.py # Reward functions (binary, partial, balanced)
-│       │   ├── subprocess_interpreter.py  # REPL subprocess
-│       │   ├── sandbox.py # Iterative env sandbox
-│       │   └── envs/
-│       │       ├── repl.py      # ArcAgiReplEnv (primary)
-│       │       └── iterative.py # ArcAgiIterativeEnv
-│       ├── data/           # ARC datasets (2024, 2025, dummy)
-│       └── tests/
-├── configs/
-│   └── arc_agi/
-│       └── rl.toml        # Phase 0 OPD training config
-└── tmp/
-    └── on-policy-distillation/  # Research docs, paper summaries, plans
-```
+- `tmp/on-policy-distillation/README.md` — Full index of all OPD docs
+- `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (next step)
+- `tmp/on-policy-distillation/prime-rl-implementation-notes.md` — Lessons from Phase 0
+- `tmp/on-policy-distillation/arc-agi-opd-plan.md` — Original phased plan (Phase 0–3)
+- `tmp/on-policy-distillation/opd-concepts.md` — OPD tutorial, all self-distillation variants
+- `tmp/on-policy-distillation/research-notes/` — Paper summaries and framework analyses
 
 ## Key Commands
 
 ```bash
 # Install dependencies
-uv sync --extra flash-attn
+uv sync
 
 # Validate config without training
 uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml --dump-config .pydantic_config/arc_test
@@ -88,61 +38,82 @@ uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml --dump-config .pydantic_config/a
 # Run training (requires 4 GPUs: 2 inference + 1 trainer + 1 teacher)
 uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml
 
+# Check logs while running
+tail -F outputs/logs/orchestrator.stdout
+tail -F outputs/logs/trainer.stdout
+tail -F outputs/logs/inference.stdout
+tail -F outputs/logs/teacher_inference.stdout
+
 # Test environment loads
 uv run python -c "import verifiers as vf; env = vf.load_environment('arc-agi', dataset_name='arc-dummy', env_type='repl'); print(type(env))"
-
-# Run ARC-AGI environment tests
-uv run pytest environments/arc_agi/tests/
 ```
-
-## Config Reference
-
-Config files use TOML and are passed via `@` syntax: `uv run rl @ config.toml`.
-
-Key OPD settings in `configs/arc_agi/opd-rl-qwen-8b.toml`:
-- `trainer.loss.teacher_tau = 0.3` — OPD distillation strength (0 = pure RL, higher = more teacher influence)
-- `trainer.loss.adv_tau = 1.0` — RL reward signal strength (hybrid mode: RL + distillation)
-- `deployment.num_teacher_gpus = 1` — Enables teacher inference server (auto-configured)
-- `orchestrator.env[].args.env_type = "repl"` — Uses multi-turn REPL environment
-- `orchestrator.env[].args.reward_mode = "balanced"` — Balanced reward weighting
 
 ## How OPD Works in prime-rl
 
 1. Student generates rollouts (multi-turn REPL interactions)
-2. Teacher (frozen checkpoint) scores the same token sequence via prefill
+2. Teacher scores the same token sequence via prefill (no generation)
 3. Loss = `adv_tau * GRPO_advantage + teacher_tau * (teacher_logprobs - student_logprobs)`
-4. The teacher KL term provides dense per-token guidance, stabilizing training
+4. The teacher KL term provides dense per-token guidance
 
 Key code:
-- Loss computation: `src/prime_rl/trainer/rl/loss.py:107-173`
-- Teacher logprobs: `src/prime_rl/orchestrator/utils.py:146-176`
+- Loss: `src/prime_rl/trainer/rl/loss.py:107-173`
+- Teacher logprobs: `src/prime_rl/orchestrator/utils.py:146-190`
+- Orchestrator call site: `src/prime_rl/orchestrator/orchestrator.py:530-544`
 - Multi-turn interleaving: `src/prime_rl/orchestrator/trajectories.py`
+- TrainingSample struct: `src/prime_rl/transport/types.py:5-22`
 
 ## Local Modifications to prime-rl
 
-1. **`src/prime_rl/configs/rl.py:326-336`** — Fixed validator ordering bug. `validate_teacher_model` now allows `teacher_tau > 0` when `deployment.num_teacher_gpus > 0` (auto-setup runs later).
-2. **`pyproject.toml`** — Added `arc-agi` dependency with local path source.
-3. **`environments/arc_agi/`** — Copied from rlvr repo.
-4. **`configs/arc_agi/opd-rl-qwen-8b.toml`** — New training config.
+1. **`src/prime_rl/configs/rl.py:326-336`** — Fixed validator ordering bug. `validate_teacher_model` now allows `teacher_tau > 0` when `deployment.num_teacher_gpus > 0`.
+2. **`src/prime_rl/orchestrator/utils.py:146-190`** — Added `max_model_len` param to `compute_teacher_logprobs`. Truncates sequences exceeding teacher context window, pads logprobs with 0.0.
+3. **`pyproject.toml`** — Added `arc-agi` dependency with local path source in `[tool.uv.sources]`.
+4. **`environments/arc_agi/`** — ARC-AGI REPL environment (copied from rlvr).
+5. **`configs/arc_agi/opd-rl-qwen-8b.toml`** — Phase 0 training config.
+
+## Repository Structure
+
+```
+prime-rl/
+├── src/prime_rl/
+│   ├── configs/              # Pydantic config models (rl.py, trainer.py, orchestrator.py, inference.py)
+│   ├── entrypoints/rl.py     # Main entry — launches all processes
+│   ├── trainer/rl/           # Training loop + loss function
+│   ├── orchestrator/         # Orchestrator loop, teacher logprobs, trajectories
+│   ├── inference/            # vLLM inference server
+│   └── transport/types.py    # TrainingSample, TrainingBatch structs
+├── environments/arc_agi/     # ARC-AGI REPL environment
+│   ├── src/arc_agi/          # env.py, data.py, rewards.py, envs/repl.py
+│   └── data/                 # ARC datasets (2024, 2025, dummy)
+├── configs/arc_agi/          # Training configs
+└── tmp/on-policy-distillation/  # Research docs, plans, notes
+```
+
+## Config Reference
+
+Configs use TOML, passed via `@` syntax: `uv run rl @ config.toml`.
+
+Key OPD settings in `configs/arc_agi/opd-rl-qwen-8b.toml`:
+- `trainer.loss.teacher_tau = 0.3` — Distillation strength (0 = pure RL)
+- `trainer.loss.adv_tau = 1.0` — RL reward signal (hybrid: both active)
+- `deployment.num_teacher_gpus = 1` — Enables teacher inference server
+- `[teacher_inference]` — Separate config for teacher model (Qwen3-32B, port 8032)
+- `orchestrator.env[].args.env_type = "repl"` — Multi-turn REPL environment
+- `orchestrator.env[].args.reward_mode = "balanced"` — Balanced reward weighting
 
 ## ARC-AGI Environment
 
-The REPL env (`environments/arc_agi/src/arc_agi/envs/repl.py`) provides multi-turn code execution:
+The REPL env (`environments/arc_agi/src/arc_agi/envs/repl.py`):
 - Model receives ARC task (training I/O pairs + test input) as system prompt
 - Each turn: model writes Python code, env executes it, returns stdout/stderr
-- Model calls `SUBMIT(test=[...])` to submit final predictions
-- Reward: grid accuracy (balanced mode = mix of binary + partial credit)
-- `SubprocessInterpreter` runs code in isolated subprocess with numpy available
+- Model calls `SUBMIT(test=[...])` to submit predictions
+- Reward: grid accuracy (balanced = binary + partial credit)
+- Ground truth is in `info["test"][i]["output"]` — available for Phase 1 privileged teacher
 
-Environment args (passed via config `args`):
-- `dataset_name`: ARC data folder (e.g., "arc-prize-2024")
-- `env_type`: "repl" (primary) or "iterative"
-- `reward_mode`: "binary", "partial", or "balanced"
-- `max_turns`: Max REPL interaction turns (default 10)
+Environment args: `dataset_name`, `env_type` ("repl"/"iterative"), `reward_mode` ("binary"/"partial"/"balanced"), `max_turns`, `eval_dataset`, `eval_split`.
 
 ## Hardware
 
-4 GPUs for Qwen3-8B with LoRA:
-- GPUs 0-1: Inference (DP=2, rollout generation)
-- GPU 2: Trainer (LoRA, FSDP)
-- GPU 3: Teacher inference (frozen checkpoint)
+4 GPUs (A100 80GB):
+- GPUs 0-1: Student inference (Qwen3-8B, DP=2)
+- GPU 2: Trainer (LoRA r=32)
+- GPU 3: Teacher inference (Qwen3-32B, bf16, gpu_mem_util=0.90)

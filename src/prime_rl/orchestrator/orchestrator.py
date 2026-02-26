@@ -1,4 +1,5 @@
 import asyncio
+import json
 import multiprocessing as mp
 import random
 import time
@@ -34,6 +35,7 @@ from prime_rl.orchestrator.eval_utils import evaluate_env
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
+    build_teacher_prompt_ids,
     compute_teacher_logprobs,
     get_sampling_args,
     get_weight_dir,
@@ -67,6 +69,48 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vlm import is_vlm_model
+
+
+def _build_teacher_prompts(
+    train_rollouts: list[vf.RolloutOutput],
+    rollout_samples: list[list[TrainingSample] | None],
+    tokenizer,
+) -> list[list[int] | None]:
+    """Build privileged teacher prompt IDs for all training samples.
+
+    For each rollout with teacher_context in its info, constructs a modified prompt
+    that includes the privileged information. Returns a flat list aligned with the
+    train_examples list (same order as iterating rollout_samples).
+
+    Returns None entries for samples without teacher_context (Phase 0 fallback).
+    """
+    teacher_prompt_ids_list: list[list[int] | None] = []
+
+    for rollout, samples in zip(train_rollouts, rollout_samples):
+        if samples is None:
+            continue
+
+        # Extract teacher_context from rollout info
+        info = rollout["info"]
+        if isinstance(info, str):
+            info = json.loads(info)
+        teacher_context = info.get("teacher_context") if isinstance(info, dict) else None
+
+        if not teacher_context:
+            # No privileged info — fall back to Phase 0 for all samples from this rollout
+            teacher_prompt_ids_list.extend([None] * len(samples))
+            continue
+
+        # Get original messages from first trajectory step
+        messages = rollout["trajectory"][0]["prompt"]
+
+        # Build privileged teacher prompt token IDs
+        teacher_prompt_ids = build_teacher_prompt_ids(messages, teacher_context, tokenizer)
+
+        # All samples from this rollout get the same teacher prompt
+        teacher_prompt_ids_list.extend([teacher_prompt_ids] * len(samples))
+
+    return teacher_prompt_ids_list
 
 
 @clean_exit
@@ -530,6 +574,14 @@ async def orchestrate(config: OrchestratorConfig):
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
+            # Build privileged teacher prompts if teacher_context is available in data
+            teacher_prompt_ids_list = _build_teacher_prompts(train_rollouts, results, tokenizer)
+            num_privileged = sum(1 for tp in teacher_prompt_ids_list if tp is not None)
+            if num_privileged > 0:
+                logger.info(
+                    f"Built privileged teacher prompts for {num_privileged}/{len(teacher_prompt_ids_list)} samples"
+                )
+
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
@@ -537,6 +589,7 @@ async def orchestrate(config: OrchestratorConfig):
                 model_name=config.teacher_model.model.name,
                 samples=train_examples,
                 max_model_len=config.seq_len,
+                teacher_prompt_ids_list=teacher_prompt_ids_list if num_privileged > 0 else None,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs

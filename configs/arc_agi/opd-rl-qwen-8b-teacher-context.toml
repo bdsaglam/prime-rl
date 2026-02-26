@@ -11,7 +11,7 @@ name = "willcb/Qwen3-8B"
 
 [wandb]
 project = "arc-agi-opd"
-name = "arc-agi-repl-phase0"
+name = "arc-agi-repl-phase1-privileged-teacher"
 
 [ckpt]
 interval = 50
@@ -27,7 +27,7 @@ target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj"
 freq = 1
 
 [trainer.loss]
-teacher_tau = 0.3      # OPD distillation strength (frozen teacher)
+teacher_tau = 0.5      # Higher tau — privileged teacher provides stronger directional signal
 adv_tau = 1.0          # full RL reward signal (hybrid mode)
 
 [trainer.optim]
@@ -70,21 +70,23 @@ interval = 10
 
 # --- Inference (student: 8B) ---
 [inference]
-gpu_memory_utilization = 0.4
+gpu_memory_utilization = 0.7
 
 [inference.model]
 name = "willcb/Qwen3-8B"
 max_model_len = 32768
 dtype = "bfloat16"
 
-# --- Teacher Inference (35B on 1 GPU) ---
+# --- Teacher Inference (27B on 1 GPU) ---
+# Phase 1: teacher sees ground-truth test outputs via privileged prompt (teacher_context in data)
+# No config flag needed — enabled automatically when info["teacher_context"] is present
 [teacher_inference]
-gpu_memory_utilization = 0.95
+gpu_memory_utilization = 0.90
 
 [teacher_inference.server]
 port = 8032
 
 [teacher_inference.model]
-name = "Qwen/Qwen3.5-35B-A3B"
+name = "willcb/Qwen3-32B"
 max_model_len = 32768
 dtype = "bfloat16"

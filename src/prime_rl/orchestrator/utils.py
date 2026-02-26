@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import time
 from itertools import cycle
 from pathlib import Path
@@ -143,22 +144,70 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
+def build_teacher_prompt_ids(
+    messages: list[dict],
+    teacher_context: str,
+    tokenizer,
+) -> list[int]:
+    """Build teacher prompt tokens with privileged info injected into the system message.
+
+    Takes the original chat messages from the rollout's first trajectory step,
+    appends teacher_context to the system message, and tokenizes.
+
+    Args:
+        messages: Original OpenAI-format chat messages from the rollout.
+        teacher_context: Privileged information string to inject.
+        tokenizer: HuggingFace tokenizer (must match teacher model's tokenizer).
+
+    Returns:
+        Token IDs for the teacher's privileged prompt.
+    """
+    modified = copy.deepcopy(messages)
+
+    # Find and modify system message
+    for msg in modified:
+        if msg["role"] == "system":
+            if isinstance(msg["content"], str):
+                msg["content"] += f"\n\n--- PRIVILEGED INFORMATION ---\n{teacher_context}"
+            break
+    else:
+        # No system message found — prepend one
+        modified.insert(0, {
+            "role": "system",
+            "content": f"--- PRIVILEGED INFORMATION ---\n{teacher_context}",
+        })
+
+    return tokenizer.apply_chat_template(modified, tokenize=True, add_generation_prompt=True, return_dict=False)
+
+
 async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
     max_model_len: int | None = None,
+    teacher_prompt_ids_list: list[list[int] | None] | None = None,
 ) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
+    """Compute teacher model logprobs for a batch of training samples via prefill.
 
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
+    If teacher_prompt_ids_list is provided, uses privileged prompts instead of
+    sample.prompt_ids (Phase 1 OPD). The returned logprobs are always aligned to
+    the student's sequence length (len(prompt_ids) + len(completion_ids)).
+    """
+
+    async def _compute_single(
+        client_config: vf.ClientConfig,
+        sample: TrainingSample,
+        teacher_prompt_ids: list[int] | None = None,
+    ) -> list[float]:
         client = setup_openai_client(client_config)
 
-        all_tokens = sample.prompt_ids + sample.completion_ids
-        full_len = len(all_tokens)
+        # Use privileged prompt if provided, otherwise fall back to student prompt
+        prompt_ids = teacher_prompt_ids if teacher_prompt_ids is not None else sample.prompt_ids
+        all_tokens = prompt_ids + sample.completion_ids
+        student_full_len = len(sample.prompt_ids) + len(sample.completion_ids)
 
         # Truncate to fit within teacher's context window (need room for max_tokens=1)
-        if max_model_len is not None and full_len >= max_model_len:
+        if max_model_len is not None and len(all_tokens) >= max_model_len:
             all_tokens = all_tokens[: max_model_len - 1]
 
         async with await get_semaphore():
@@ -176,18 +225,35 @@ async def compute_teacher_logprobs(
                 },
                 cast_to=ChatCompletion,
             )
-        logprobs = [
+        raw_logprobs = [
             0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
             for lp in getattr(response, "prompt_logprobs", [])
         ]
 
-        # Pad with 0.0 for truncated tokens so length matches the full sequence
-        if len(logprobs) < full_len:
-            logprobs.extend([0.0] * (full_len - len(logprobs)))
+        if teacher_prompt_ids is not None:
+            # Phase 1: privileged prompt is longer — extract completion logprobs and align
+            teacher_prompt_len = len(prompt_ids)
+            completion_logprobs = raw_logprobs[teacher_prompt_len:]
+            # Pad if truncation cut into completion tokens
+            if len(completion_logprobs) < len(sample.completion_ids):
+                completion_logprobs.extend([0.0] * (len(sample.completion_ids) - len(completion_logprobs)))
+            # Build aligned result: zeros for student prompt + teacher's completion logprobs
+            logprobs = [0.0] * len(sample.prompt_ids) + completion_logprobs
+        else:
+            # Phase 0: same prompt, logprobs align directly
+            logprobs = raw_logprobs
+            if len(logprobs) < student_full_len:
+                logprobs.extend([0.0] * (student_full_len - len(logprobs)))
 
         return logprobs
 
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
+    if teacher_prompt_ids_list is None:
+        teacher_prompt_ids_list = [None] * len(samples)
+
+    return await asyncio.gather(*[
+        _compute_single(client, sample, tp_ids)
+        for client, sample, tp_ids in zip(cycle(clients), samples, teacher_prompt_ids_list)
+    ])
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

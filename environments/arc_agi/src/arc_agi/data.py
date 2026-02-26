@@ -47,6 +47,15 @@ def format_pairs(pairs: list[dict], split: str = "train") -> str:
     return "\n".join(parts)
 
 
+def format_teacher_context(test_pairs: list[dict]) -> str:
+    """Format ground-truth test outputs as default teacher context for Phase 1 OPD."""
+    parts: list[str] = []
+    for i, pair in enumerate(test_pairs, 1):
+        parts.append(f"Challenge #{i} expected output:")
+        parts.append(format_grid(pair["output"]))
+    return "\n".join(parts)
+
+
 def format_task_question(train_pairs: list[dict], test_inputs: list[Grid]) -> str:
     """Format an ARC task as a question string with grids."""
     parts: list[str] = []
@@ -164,6 +173,14 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
         challenges = {k: v for k, v in challenges.items() if k in task_ids}
         solutions = {k: v for k, v in solutions.items() if k in task_ids}
 
+    # Load optional per-task teacher context (Phase 1 OPD privileged info)
+    base = _resolve_data_folder(data_folder)
+    teacher_context_path = base / f"arc-agi_{split_name}_teacher_context.json"
+    teacher_contexts: dict[str, str] | None = None
+    if teacher_context_path.exists():
+        with open(teacher_context_path) as f:
+            teacher_contexts = json.load(f)
+
     rows: list[dict] = []
     for task_id, task in challenges.items():
         train_pairs = task["train"]
@@ -174,11 +191,20 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
         question = format_task_question(train_pairs, test_inputs)
         answer = json.dumps(test_outputs)
 
-        info = ArcTask(
-            task_id=task_id,
-            train=train_pairs,
-            test=test_pairs,
+        # Teacher context: use custom if provided, otherwise format from ground truth
+        if teacher_contexts and task_id in teacher_contexts:
+            teacher_context = teacher_contexts[task_id]
+        else:
+            teacher_context = format_teacher_context(test_pairs)
+
+        info: dict = dict(
+            ArcTask(
+                task_id=task_id,
+                train=train_pairs,
+                test=test_pairs,
+            )
         )
+        info["teacher_context"] = teacher_context
 
         rows.append(
             {

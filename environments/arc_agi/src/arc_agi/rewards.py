@@ -149,4 +149,8 @@ def ArcAgiRubric(parser=None, reward_mode: str = "binary", **kwargs):
     """Create an ARC-AGI rubric with configurable reward weighting."""
     funcs = [exact_match_reward, cell_accuracy_reward, shape_match_reward, format_reward]
     weights = _REWARD_MODE_WEIGHTS.get(reward_mode, _REWARD_MODE_WEIGHTS["binary"])
+    # Normalize weights so rewards are in [0, 1]
+    total = sum(weights)
+    if total > 0:
+        weights = [w / total for w in weights]
     return vf.Rubric(funcs=funcs, weights=weights, parser=parser, **kwargs)
