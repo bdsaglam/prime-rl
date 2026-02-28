@@ -21,7 +21,7 @@ def load_environment(
     split: str = "training",
     eval_dataset: str | list[str] | None = None,
     eval_split: str = "evaluation",
-    reward_mode: str = "binary",
+    reward_mode: str = "balanced",
     max_turns: int = 10,
     env_type: str = "repl",
     **kwargs,
@@ -34,7 +34,7 @@ def load_environment(
         split: Data split (training or evaluation).
         eval_dataset: Separate ARC data folder name(s) for evaluation (optional).
         eval_split: Evaluation data split.
-        reward_mode: Reward weighting - "binary", "partial", or "combined".
+        reward_mode: Reward weighting - "binary", "partial", "combined", or "balanced".
         max_turns: Maximum interaction turns.
         env_type: Environment type (only "repl" is supported).
         **kwargs: Additional arguments passed to the environment.

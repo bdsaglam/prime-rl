@@ -31,7 +31,7 @@ class ArcTask(TypedDict):
 
 def format_grid(grid: Grid) -> str:
     """Convert a grid to a string (comma-separated digits)."""
-    return "\n".join(",".join(str(c) for c in row) for row in grid)
+    return "\n\n".join(",".join(str(c) for c in row) for row in grid)
 
 
 def format_input_output_pair(input: Grid, output: Grid) -> str:
@@ -175,7 +175,7 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
 
     # Load optional per-task teacher context (Phase 1 OPD privileged info)
     base = _resolve_data_folder(data_folder)
-    teacher_context_path = base / f"arc-agi_{split_name}_teacher_context.json"
+    teacher_context_path = base / f"arc-agi_{split_name}_hints.json"
     teacher_contexts: dict[str, str] | None = None
     if teacher_context_path.exists():
         with open(teacher_context_path) as f:

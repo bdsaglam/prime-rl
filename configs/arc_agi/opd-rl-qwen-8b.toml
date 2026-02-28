@@ -48,7 +48,7 @@ max_tokens = 4096
 [[orchestrator.env]]
 id = "arc-agi"
 name = "arc-agi-repl"
-args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", reward_mode = "balanced", max_turns = 20, env_type = "repl" }
+args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 20}
 
 [orchestrator.eval]
 interval = 100
@@ -58,7 +58,7 @@ num_examples = 8
 [[orchestrator.eval.env]]
 id = "arc-agi"
 name = "arc-agi-eval"
-args = { dataset_name = "arc-prize-2024", split = "evaluation", reward_mode = "balanced", max_turns = 20, env_type = "repl" }
+args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 20}
 
 [orchestrator.eval.sampling]
 temperature = 1.0
