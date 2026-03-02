@@ -1,10 +1,10 @@
 max_steps = 200
-seq_len = 32768
+seq_len = 40000
 
 [deployment]
 num_train_gpus = 1
-num_infer_gpus = 1
-num_teacher_gpus = 2
+num_infer_gpus = 2
+# teacher hosted externally — no local teacher GPUs
 
 [model]
 name = "willcb/Qwen3-8B"
@@ -31,7 +31,7 @@ teacher_tau = 0.5      # Higher tau — privileged teacher provides stronger dir
 adv_tau = 1.0          # full RL reward signal (hybrid mode)
 
 [trainer.optim]
-lr = 5e-5              # 50x increase from 1e-6 — policy was frozen at 5e-6 (mismatch_kl=0.0006 flat for 13 steps)
+lr = 5e-6              # 5x increase from 1e-6 — policy was frozen (mismatch_kl=0.0005)
 weight_decay = 0.0
 
 # --- Orchestrator ---
@@ -43,31 +43,25 @@ max_concurrent = 64
 
 [orchestrator.sampling]
 temperature = 1.0
-max_tokens = 2048       # restored — teacher now on 2 GPUs (TP=2) with full 32K context
-
-[orchestrator.sampling.extra_body]
-chat_template_kwargs = { enable_thinking = false }
+max_tokens = 4096
 
 [[orchestrator.env]]
 id = "arc-agi"
 name = "arc-agi-repl"
-args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 7}
+args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 20}
 
 [orchestrator.eval]
-interval = 25
+interval = 25           # was 100 — get 8 eval points across 200 steps instead of 2
 rollouts_per_example = 4
 num_examples = 8
 
 [[orchestrator.eval.env]]
 id = "arc-agi"
 name = "arc-agi-eval"
-args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 7}
+args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 20}
 
 [orchestrator.eval.sampling]
 temperature = 1.0
-
-[orchestrator.eval.sampling.extra_body]
-chat_template_kwargs = { enable_thinking = false }
 
 [orchestrator.wandb.log_extras]
 samples = true
@@ -80,22 +74,17 @@ gpu_memory_utilization = 0.90
 
 [inference.model]
 name = "willcb/Qwen3-8B"
-max_model_len = 32768
+max_model_len = 40000
 dtype = "bfloat16"
 
-# --- Teacher Inference (32B on 2 GPUs, TP=2) ---
-# Phase 1: teacher sees ground-truth test outputs via privileged prompt (teacher_context in data)
-# No config flag needed — enabled automatically when info["teacher_context"] is present
-[teacher_inference]
-gpu_memory_utilization = 0.90
+# --- Teacher Inference (external server via SSH tunnel) ---
+# Remote: 144.122.52.26 running vllm serve willcb/Qwen3-32B --port 8032
+# Tunnel: ssh -N -L 8032:localhost:8032 144.122.52.26
+[orchestrator.teacher_model.client]
+base_url = ["http://localhost:8032/v1"]
 
-[teacher_inference.server]
-port = 8032
-
-[teacher_inference.model]
+[orchestrator.teacher_model.model]
 name = "willcb/Qwen3-32B"
-max_model_len = 32768
-dtype = "bfloat16"
 
-[orchestrator.teacher_model.chat_template_kwargs]
-enable_thinking = false
+[orchestrator.teacher_model]
+max_model_len = 20000

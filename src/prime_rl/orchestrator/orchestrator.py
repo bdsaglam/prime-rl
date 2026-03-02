@@ -75,6 +75,7 @@ def _build_teacher_prompts(
     train_rollouts: list[vf.RolloutOutput],
     rollout_samples: list[list[TrainingSample] | None],
     tokenizer,
+    chat_template_kwargs: dict | None = None,
 ) -> list[list[int] | None]:
     """Build privileged teacher prompt IDs for all training samples.
 
@@ -105,7 +106,7 @@ def _build_teacher_prompts(
         messages = rollout["trajectory"][0]["prompt"]
 
         # Build privileged teacher prompt token IDs
-        teacher_prompt_ids = build_teacher_prompt_ids(messages, teacher_context, tokenizer)
+        teacher_prompt_ids = build_teacher_prompt_ids(messages, teacher_context, tokenizer, chat_template_kwargs)
 
         # All samples from this rollout get the same teacher prompt
         teacher_prompt_ids_list.extend([teacher_prompt_ids] * len(samples))
@@ -575,7 +576,9 @@ async def orchestrate(config: OrchestratorConfig):
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
             # Build privileged teacher prompts if teacher_context is available in data
-            teacher_prompt_ids_list = _build_teacher_prompts(train_rollouts, results, tokenizer)
+            teacher_prompt_ids_list = _build_teacher_prompts(
+                train_rollouts, results, tokenizer, config.teacher_model.chat_template_kwargs or None
+            )
             num_privileged = sum(1 for tp in teacher_prompt_ids_list if tp is not None)
             if num_privileged > 0:
                 logger.info(
@@ -588,7 +591,7 @@ async def orchestrate(config: OrchestratorConfig):
                 clients=teacher_inference_pool.clients,
                 model_name=config.teacher_model.model.name,
                 samples=train_examples,
-                max_model_len=config.seq_len,
+                max_model_len=config.teacher_model.max_model_len or config.seq_len,
                 teacher_prompt_ids_list=teacher_prompt_ids_list if num_privileged > 0 else None,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):

@@ -664,6 +664,16 @@ class TeacherModelConfig(BaseConfig):
         Field(description="The model configuration for the teacher model."),
     ] = ModelConfig()
 
+    max_model_len: Annotated[
+        int | None,
+        Field(description="Teacher's max context window. Used to truncate sequences before sending to teacher server."),
+    ] = None
+
+    chat_template_kwargs: Annotated[
+        dict[str, Any],
+        Field(description="Extra kwargs passed to tokenizer.apply_chat_template when building teacher prompts (e.g. enable_thinking=false)."),
+    ] = {}
+
 
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""

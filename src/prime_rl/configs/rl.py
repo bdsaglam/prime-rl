@@ -657,6 +657,7 @@ class RLConfig(BaseSettings):
         port = self.teacher_inference.server.port
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+        self.orchestrator.teacher_model.max_model_len = self.teacher_inference.model.max_model_len
 
         return self
 

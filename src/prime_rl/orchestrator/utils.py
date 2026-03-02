@@ -148,6 +148,7 @@ def build_teacher_prompt_ids(
     messages: list[dict],
     teacher_context: str,
     tokenizer,
+    chat_template_kwargs: dict | None = None,
 ) -> list[int]:
     """Build teacher prompt tokens with privileged info injected into the system message.
 
@@ -158,6 +159,7 @@ def build_teacher_prompt_ids(
         messages: Original OpenAI-format chat messages from the rollout.
         teacher_context: Privileged information string to inject.
         tokenizer: HuggingFace tokenizer (must match teacher model's tokenizer).
+        chat_template_kwargs: Extra kwargs for apply_chat_template (e.g. enable_thinking=False).
 
     Returns:
         Token IDs for the teacher's privileged prompt.
@@ -177,7 +179,9 @@ def build_teacher_prompt_ids(
             "content": f"--- PRIVILEGED INFORMATION ---\n{teacher_context}",
         })
 
-    return tokenizer.apply_chat_template(modified, tokenize=True, add_generation_prompt=True, return_dict=False)
+    return tokenizer.apply_chat_template(
+        modified, tokenize=True, add_generation_prompt=True, return_dict=False, **(chat_template_kwargs or {})
+    )
 
 
 async def compute_teacher_logprobs(
