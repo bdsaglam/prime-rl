@@ -196,6 +196,7 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
             teacher_context = teacher_contexts[task_id]
         else:
             teacher_context = format_teacher_context(test_pairs)
+        teacher_context += "\nNow, solve the puzzle on your own, including the thinking process."
 
         info: dict = dict(
             ArcTask(
