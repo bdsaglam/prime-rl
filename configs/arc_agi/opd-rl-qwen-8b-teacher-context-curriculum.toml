@@ -1,5 +1,5 @@
 max_steps = 200
-seq_len = 32768
+seq_len = 16384
 
 [deployment]
 num_train_gpus = 1
@@ -13,15 +13,8 @@ name = "willcb/Qwen3-8B"
 project = "arc-agi-opd"
 name = "arc-agi-repl-phase1-privileged-teacher"
 
-[trainer.wandb]
-id = "axjc8tnp"
-
-[orchestrator.wandb]
-id = "02l4zaq7"
-
 [ckpt]
 interval = 10
-resume_step = 10
 
 # --- Trainer ---
 [trainer.model]
@@ -58,6 +51,7 @@ max_concurrent = 64
 
 [orchestrator.sampling]
 temperature = 1.0
+top_k = 20                 # Qwen3 recommended — cuts off low-prob garbage tokens
 max_tokens = 2048
 
 [orchestrator.sampling.extra_body]
@@ -80,9 +74,14 @@ args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 10}
 
 [orchestrator.eval.sampling]
 temperature = 1.0
+top_k = 20
 
 [orchestrator.eval.sampling.extra_body]
 chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
+hard_threshold=0.1
 
 [orchestrator.wandb.log_extras]
 samples = true
@@ -95,7 +94,7 @@ gpu_memory_utilization = 0.90
 
 [inference.model]
 name = "willcb/Qwen3-8B"
-max_model_len = 32768
+max_model_len = 16384
 dtype = "bfloat16"
 
 # --- Teacher Inference (32B on 1 GPU) ---
@@ -109,7 +108,7 @@ port = 8032
 
 [teacher_inference.model]
 name = "willcb/Qwen3-32B"
-max_model_len = 32768
+max_model_len = 16384
 dtype = "bfloat16"
 
 [orchestrator.teacher_model.chat_template_kwargs]

@@ -1,5 +1,13 @@
-max_steps = 200
-seq_len = 32768
+# Phase 1.5a: Hint-Assisted Curriculum Learning
+# Student sees transformation rule hints in its prompt.
+# Teacher sees hints + ground-truth outputs (privileged info).
+# Goal: student learns REPL execution patterns given hints → bootstrap for hint-free Phase 1.5b.
+#
+# Based on: opd-rl-qwen-8b-teacher-context-curriculum.toml
+# Key changes: include_hint=true in training env, lower LR, lower teacher_tau
+
+max_steps = 100
+seq_len = 16384
 
 [deployment]
 num_train_gpus = 1
@@ -11,22 +19,15 @@ name = "willcb/Qwen3-8B"
 
 [wandb]
 project = "arc-agi-opd"
-name = "arc-agi-repl-phase1-privileged-teacher"
-
-[trainer.wandb]
-id = "axjc8tnp"
-
-[orchestrator.wandb]
-id = "02l4zaq7"
+name = "arc-agi-hint-curriculum-phase1.5a"
 
 [ckpt]
 interval = 10
-resume_step = 10
 
 # --- Trainer ---
 [trainer.model]
-fused_lm_head_chunk_size = "auto"    # Chunk logprob computation — avoids materializing [N, vocab] tensor
-optim_cpu_offload = true              # Offload Adam states to CPU — saves ~2x model size GPU memory
+fused_lm_head_chunk_size = "auto"
+optim_cpu_offload = true
 
 [trainer.model.lora]
 rank = 32
@@ -42,11 +43,11 @@ pin_memory = true
 max_inflight_activations = 5
 
 [trainer.loss]
-teacher_tau = 0.5      # Higher tau — privileged teacher provides stronger directional signal
-adv_tau = 1.0          # full RL reward signal (hybrid mode)
+teacher_tau = 0.3      # Lower than Phase 1 (0.5) — hints make task easier, rely more on RL reward
+adv_tau = 1.0          # Full RL reward signal
 
 [trainer.optim]
-lr = 5e-5              # 50x increase from 1e-6 — policy was frozen at 5e-6 (mismatch_kl=0.0006 flat for 13 steps)
+lr = 1e-5              # Lower than Phase 1 (5e-5) — expect faster convergence with easier task
 weight_decay = 0.0
 
 # --- Orchestrator ---
@@ -63,26 +64,33 @@ max_tokens = 2048
 [orchestrator.sampling.extra_body]
 chat_template_kwargs = { enable_thinking = false }
 
+# Training env: student sees hints
 [[orchestrator.env]]
 id = "arc-agi"
 name = "arc-agi-repl"
-args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 10}
+args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 10, include_hint = true }
 
 [orchestrator.eval]
 interval = 25
 rollouts_per_example = 4
 num_examples = 8
 
+# Eval env: NO hints — measures generalization
 [[orchestrator.eval.env]]
 id = "arc-agi"
 name = "arc-agi-eval"
-args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 10}
+args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 10, include_hint = false }
 
 [orchestrator.eval.sampling]
 temperature = 1.0
+top_k = 20
 
 [orchestrator.eval.sampling.extra_body]
 chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.buffer]
+online_difficulty_filtering = true
+hard_threshold = 0.1
 
 [orchestrator.wandb.log_extras]
 samples = true
@@ -95,12 +103,10 @@ gpu_memory_utilization = 0.90
 
 [inference.model]
 name = "willcb/Qwen3-8B"
-max_model_len = 32768
+max_model_len = 16384
 dtype = "bfloat16"
 
 # --- Teacher Inference (32B on 1 GPU) ---
-# Phase 1: teacher sees ground-truth test outputs via privileged prompt (teacher_context in data)
-# No config flag needed — enabled automatically when info["teacher_context"] is present
 [teacher_inference]
 gpu_memory_utilization = 0.90
 
@@ -109,7 +115,7 @@ port = 8032
 
 [teacher_inference.model]
 name = "willcb/Qwen3-32B"
-max_model_len = 32768
+max_model_len = 16384
 dtype = "bfloat16"
 
 [orchestrator.teacher_model.chat_template_kwargs]

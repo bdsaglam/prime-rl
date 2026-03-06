@@ -300,19 +300,38 @@ class ArcAgiReplEnv(vf.MultiTurnEnv):
         system_prompt: str = SYSTEM_PROMPT,
         timeout: float = 1200.0,
         max_output_chars: int = 50_000,
+        include_hint: bool = False,
         **kwargs,
     ):
         super().__init__(system_prompt=system_prompt, **kwargs)
         self.timeout = timeout
         self.max_output_chars = max_output_chars
+        self.include_hint = include_hint
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         state = await super().setup_state(state, **kwargs)
         state["submitted_answers"] = None
         state["iteration"] = 0
 
-        # Build sandbox code with task data
+        # Inject hint into the user message if enabled
         info = state["info"]
+        if self.include_hint:
+            hint = info.get("hint", "")
+            if hint:
+                hint_suffix = (
+                    "\n\n---\n"
+                    "Hint: Here is an analysis of the transformation rule for this puzzle:\n"
+                    f"{hint}\n\n"
+                    "Use this hint to guide your solution. Write Python code to implement the described transformation."
+                )
+                # Append hint to the last user message in the prompt
+                for msg in reversed(state["prompt"]):
+                    if msg.get("role") == "user":
+                        # Support both dict-style and Pydantic message objects
+                        msg.content = msg.content + hint_suffix
+                        break
+
+        # Build sandbox code with task data
         task_json = json.dumps(
             {
                 "train": info["train"],

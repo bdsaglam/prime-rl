@@ -22,6 +22,8 @@ class ArcTask(TypedDict):
     task_id: str
     train: list[dict]  # [{"input": Grid, "output": Grid}, ...]
     test: list[dict]  # [{"input": Grid, "output": Grid}, ...]
+    hint: str  # Raw hint text describing the transformation rule (empty if unavailable)
+    teacher_context: str  # Privileged info for teacher: hint + ground-truth outputs
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +169,14 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
     split_name, start, end, task_ids = parse_split(split)
 
     challenges, solutions = load_arc_tasks(data_folder, split_name)
+    print(f"Loaded {len(challenges)} puzzles for {split_name} split")
 
     # Filter by task IDs if specified
     if task_ids:
         challenges = {k: v for k, v in challenges.items() if k in task_ids}
         solutions = {k: v for k, v in solutions.items() if k in task_ids}
+    
+    print(f"Filtered {len(challenges)} puzzles for {split_name} split")
 
     # Load optional per-task teacher context (Phase 1 OPD privileged info)
     base = _resolve_data_folder(data_folder)
@@ -180,6 +185,7 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
     if teacher_context_path.exists():
         with open(teacher_context_path) as f:
             teacher_contexts = json.load(f)
+        print(f"Loaded {len(teacher_contexts)} teacher contexts for {split_name} split")
 
     rows: list[dict] = []
     for task_id, task in challenges.items():
@@ -191,21 +197,34 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
         question = format_task_question(train_pairs, test_inputs)
         answer = json.dumps(test_outputs)
 
-        # Teacher context: use custom if provided, otherwise format from ground truth
-        if teacher_contexts and task_id in teacher_contexts:
-            teacher_context = teacher_contexts[task_id]
+        # Build hint and teacher_context fields
+        # hint: raw transformation rule description (for student in hint-assisted mode)
+        # teacher_context: hint + ground-truth outputs (privileged info for teacher)
+        if not teacher_contexts:
+            hint = ""
+            teacher_context = ""
+        elif task_id in teacher_contexts:
+            hint = teacher_contexts[task_id]
+            ground_truth = format_teacher_context(test_pairs)
+            teacher_context = (
+                hint
+                + "\n\n"
+                + ground_truth
+                + "\nNow, solve the puzzle on your own, including the thinking process."
+            )
         else:
-            teacher_context = format_teacher_context(test_pairs)
-        teacher_context += "\nNow, solve the puzzle on your own, including the thinking process."
+            # skip the sample if missing teacher context
+            continue
 
         info: dict = dict(
             ArcTask(
                 task_id=task_id,
                 train=train_pairs,
                 test=test_pairs,
+                hint=hint,
+                teacher_context=teacher_context,
             )
         )
-        info["teacher_context"] = teacher_context
 
         rows.append(
             {
@@ -216,8 +235,11 @@ def prepare_dataset(data_folder: str, split: str) -> Dataset:
             }
         )
 
+    print(f"Prepared {len(rows)} rows for {split_name} split")
+
     # Apply range slicing if specified
     if start is not None or end is not None:
         rows = rows[start:end]
+        print(f"Sliced {len(rows)} rows for {split_name} split")
 
     return Dataset.from_list(rows)

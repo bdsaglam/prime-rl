@@ -8,23 +8,28 @@ Fine-tune Qwen3-8B as an ARC-AGI REPL agent. The model writes Python code in a m
 
 ## Current State
 
-**Phase 0 is running.** Qwen3-8B student with Qwen3-32B frozen teacher on 4 GPUs (2 inference + 1 trainer + 1 teacher). Training config: `configs/arc_agi/opd-rl-qwen-8b.toml`. W&B project: `arc-agi-opd`.
+**Phase 1 training completed 23/200 steps but showed no improvement.** Rewards oscillated around 0.15-0.20 with no upward trend, grad norm declined, and mismatch KL plateaued at ~0.0012. The task is too difficult for the student to learn from sparse RL rewards alone, even with teacher distillation.
+
+Training config: `configs/arc_agi/opd-rl-qwen-8b-teacher-context.toml`. W&B project: `arc-agi-opd`, runs: `axjc8tnp` (trainer), `02l4zaq7` (orchestrator). Checkpoints at steps 10 and 20.
 
 Phase 0 required 3 bug fixes in prime-rl (documented in `tmp/on-policy-distillation/prime-rl-implementation-notes.md`):
 1. Validator ordering for `teacher_tau` + `num_teacher_gpus` (`src/prime_rl/configs/rl.py:326-336`)
 2. Teacher prefill crash on long sequences — truncation + padding (`src/prime_rl/orchestrator/utils.py:146-190`)
 3. Teacher inference port conflict when using explicit `[teacher_inference]` config
 
-**Next:** Phase 1 — privileged-info teacher (inject ground truth into teacher prompt). Plan: `tmp/on-policy-distillation/phase1-privileged-teacher.md`.
+**Next:** Phase 1.5 — hint-assisted curriculum learning. Plan: `tmp/on-policy-distillation/phase1.5-hint-curriculum.md`.
 
 ## Documentation
 
 - `tmp/on-policy-distillation/README.md` — Full index of all OPD docs
-- `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (next step)
+- `tmp/on-policy-distillation/phase1.5-hint-curriculum.md` — **Phase 1.5 plan (current — next step)**
+- `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (completed, didn't work)
 - `tmp/on-policy-distillation/prime-rl-implementation-notes.md` — Lessons from Phase 0
 - `tmp/on-policy-distillation/arc-agi-opd-plan.md` — Original phased plan (Phase 0–3)
 - `tmp/on-policy-distillation/opd-concepts.md` — OPD tutorial, all self-distillation variants
+- `tmp/on-policy-distillation/rl-training-management-guide.md` — **Training management guide** — crash recovery, metric dashboards, failure diagnosis, hyperparameter tuning, tmux conventions
 - `tmp/on-policy-distillation/research-notes/` — Paper summaries and framework analyses
+- `scratchpad.md` — Inference server commands and eval recipes for various models
 
 ## Key Commands
 
@@ -46,7 +51,63 @@ tail -F outputs/logs/teacher_inference.stdout
 
 # Test environment loads
 uv run python -c "import verifiers as vf; env = vf.load_environment('arc-agi', dataset_name='arc-dummy', env_type='repl'); print(type(env))"
+
+# Kill all GPU processes (useful before starting new inference server)
+nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9
 ```
+
+## Inference Server & Evaluation
+
+Use `tmux` to manage long-running inference servers and eval runs. Typical workflow:
+1. Start a vLLM inference server in a tmux session
+2. Run `prime eval` against it in another tmux session (or the same one after server is ready)
+
+### Starting a vLLM inference server
+
+```bash
+# Qwen3-8B on 4 GPUs (DP=4, low memory per GPU)
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-8B \
+    --port 8900 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.4 \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --max-model-len 32768 \
+    --default-chat-template-kwargs '{"enable_thinking": true}' \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser hermes
+
+# Qwen3-32B on 4 GPUs (DP=4, high memory per GPU)
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-32B \
+    --port 8900 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --max-model-len 32768 \
+    --default-chat-template-kwargs '{"enable_thinking": true}' \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+### Running evaluation
+
+```bash
+# Quick smoke test (1 puzzle, 1 rollout)
+prime eval run arc-agi -x '{"dataset_name":"arc-dummy"}' -n 1 -r 1 -m MODEL_NAME -b http://0.0.0.0:8900/v1
+
+# Full eval on training split (4 puzzles, 3 rollouts each)
+prime eval run arc-agi -x '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m MODEL_NAME -b http://0.0.0.0:8900/v1
+```
+
+`prime eval run` flags:
+- `-x '{"dataset_name":"..."}'` — env args JSON (same as `orchestrator.env[].args` in TOML)
+- `-n N` — number of examples to evaluate
+- `-r R` — rollouts per example (more = better estimate, slower)
+- `-m MODEL` — model name (must match what vLLM is serving)
+- `-b URL` — base URL of the inference server
+
+See `scratchpad.md` for more model-specific server configs and eval recipes.
 
 ## How OPD Works in prime-rl
 

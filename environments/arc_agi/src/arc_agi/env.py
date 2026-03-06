@@ -24,6 +24,7 @@ def load_environment(
     reward_mode: str = "balanced",
     max_turns: int = 10,
     env_type: str = "repl",
+    include_hint: bool = False,
     **kwargs,
 ) -> vf.Environment:
     """Load an ARC-AGI environment.
@@ -67,6 +68,7 @@ def load_environment(
         parser=parser,
         rubric=rubric,
         max_turns=max_turns,
+        include_hint=include_hint,
         **kwargs,
     )
 
