@@ -1,4 +1,3 @@
-import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -13,7 +12,8 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbConfig,
 )
-from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.logger import get_logger
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -333,7 +333,7 @@ class ModelConfig(BaseModelConfig):
                     f"Fused LM head chunk size must be at least {low}, got {self.fused_lm_head_chunk_size}"
                 )
             if self.fused_lm_head_chunk_size < warn_threshold:
-                warnings.warn(
+                get_logger().warning(
                     f"Fused LM head chunk size is set to {self.fused_lm_head_chunk_size}, which is less than the recommended threshold of {warn_threshold}. This may cause some runs to diverge due to numerical instability in floating point arithmetic."
                 )
 
@@ -530,68 +530,23 @@ class CheckpointConfig(BaseConfig):
     ] = False
 
 
-# -- RL trainer-specific configs --
-
-
 class DefaultLossConfig(BaseModel):
     """Config for the default loss."""
 
     type: Literal["default"] = "default"
-    ratio_type: Annotated[Literal["token", "sequence"], Field(description="Type of importance ratio to use.")] = "token"
 
-    token_mask_high: Annotated[
-        float, Field(ge=0, description="The high threshold for token importance ratio to mask.")
-    ] = 8.0
-    token_mask_low: Annotated[
-        float, Field(ge=0, description="The low threshold for token importance ratio to mask.")
-    ] = 0.125
-    sequence_clip_high: Annotated[
-        float, Field(ge=0, description="The high threshold for sequence importance ratio to clip.")
-    ] = 10.0
-    geo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for geo importance ratio to mask.")] = (
-        10.0
-    )
-    geo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for geo importance ratio to mask.")] = 0.1
-    sequence_mask_low: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio below this value.",
-        ),
-    ] = 0.0
-    sequence_mask_high: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="If set, masks entire sequences when any generated token has an importance ratio above this value.",
-        ),
-    ] = 100.0
-
+    ipo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
+    ipo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 0.0
-
-    @model_validator(mode="after")
-    def validate_mask_bounds(self):
-        if self.token_mask_low >= self.token_mask_high:
-            raise ValueError(
-                f"token_mask_low ({self.token_mask_low}) must be less than token_mask_high ({self.token_mask_high})"
-            )
-        if self.geo_mask_low >= self.geo_mask_high:
-            raise ValueError(
-                f"geo_mask_low ({self.geo_mask_low}) must be less than geo_mask_high ({self.geo_mask_high})"
-            )
-        if self.sequence_mask_low >= self.sequence_mask_high:
-            raise ValueError(
-                f"sequence_mask_low ({self.sequence_mask_low}) must be less than sequence_mask_high ({self.sequence_mask_high})"
-            )
-        return self
+    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
 class CustomLossConfig(BaseModel):
     """Config for a custom external loss function."""
 
     type: Literal["custom"] = "custom"
+
     import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
@@ -646,7 +601,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class TrainerConfig(BaseSettings):
+class TrainerConfig(BaseConfig):
     """Configures the RL trainer"""
 
     # The model configuration

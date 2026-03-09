@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import multiprocessing as mp
 import random
@@ -49,16 +50,17 @@ from prime_rl.orchestrator.vf_utils import (
     intercept_vf_logging,
     setup_env_client,
     spawn_env_server,
+    task_uses_group_scoring,
     wait_for_env_servers,
 )
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     setup_inference_pool,
 )
+from prime_rl.utils.config import cli
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.temp_scheduling import compute_temperature
 from prime_rl.utils.utils import (
     clean_exit,
@@ -214,6 +216,25 @@ async def orchestrate(config: OrchestratorConfig):
         env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
+    verification_enabled = config.verification.enabled
+
+    train_env_deferred_group_scoring_tasks = (
+        {env_name for env_name in train_env_names if task_uses_group_scoring(train_env_group, env_name)}
+        if verification_enabled
+        else set()
+    )
+    for train_env_name, env_cfg in zip(train_env_names, config.env):
+        env_cfg.extra_env_kwargs["score_rollouts"] = (
+            verification_enabled and train_env_name not in train_env_deferred_group_scoring_tasks
+        )
+    if not verification_enabled:
+        logger.info("Verification disabled; all training envs will skip scoring.")
+    elif train_env_deferred_group_scoring_tasks:
+        deferred_tasks = ", ".join(sorted(train_env_deferred_group_scoring_tasks))
+        logger.info(
+            f"Deferred group scoring enabled for training tasks: {deferred_tasks}. "
+            "Rollouts run individually and are scored once each group completes."
+        )
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
@@ -230,6 +251,11 @@ async def orchestrate(config: OrchestratorConfig):
             )
             env_processes.append(process)
         else:
+            if env_name in train_env_deferred_group_scoring_tasks:
+                logger.warning(
+                    f"Training env {env_name} uses external server at {env.address}. "
+                    "Ensure that server was started with score_rollouts=False."
+                )
             address = env.address
         logger.info(f"Connecting train environment {env_name} to server at {address}")
         train_env_addresses.append(address)
@@ -319,7 +345,7 @@ async def orchestrate(config: OrchestratorConfig):
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.model.lora.name if config.model.lora else None,
-        output_dir=config.output_dir,
+        deferred_group_scoring_tasks=train_env_deferred_group_scoring_tasks,
         config=config,
     )
 
@@ -532,7 +558,8 @@ async def orchestrate(config: OrchestratorConfig):
         if is_vlm:
             vlm_cache = build_vlm_image_cache(train_rollouts, processor)
             logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s"
+                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
+                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
             vlm_cache = None
@@ -820,6 +847,11 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
+        # Free large per-step objects to prevent memory accumulation
+        del train_rollouts, train_examples, training_batch, vlm_cache
+        del results_df, metrics_df, val_results_df
+        gc.collect()
+
         event_loop_lag_monitor.reset()
 
         # Send heartbeat if configured
@@ -891,7 +923,7 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
 
-    asyncio.run(orchestrate(parse_argv(OrchestratorConfig)))
+    asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
 if __name__ == "__main__":
