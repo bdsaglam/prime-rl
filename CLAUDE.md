@@ -21,6 +21,7 @@ Phase 0 required 3 bug fixes in prime-rl (documented in `tmp/on-policy-distillat
 
 ## Documentation
 
+- `tmp/on-policy-distillation/agent-workflow.md` — Agent workflow (your way of working, IMPORTANT doc)
 - `tmp/on-policy-distillation/README.md` — Full index of all OPD docs
 - `tmp/on-policy-distillation/phase1.5-hint-curriculum.md` — **Phase 1.5 plan (current — next step)**
 - `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (completed, didn't work)

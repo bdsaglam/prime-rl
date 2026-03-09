@@ -282,3 +282,27 @@ prime eval run arc-agi -x '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m Qwen/
 
 # Fix flash-attn issue
 uv sync --extra flash-attn
+
+# Teacher
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-32B \
+    --port 8932 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --max-model-len 32768 \
+    --default-chat-template-kwargs '{"enable_thinking": true}' \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser hermes
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-32B \
+    --port 8932 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --max-model-len 32768 \
+    --enable-auto-tool-choice --tool-call-parser hermes
+
+prime eval run arc-agi -x '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m willcb/Qwen3-32B -b http://0.0.0.0:8932/v1
