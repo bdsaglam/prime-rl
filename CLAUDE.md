@@ -1,119 +1,90 @@
-# prime-rl: ARC-AGI On-Policy Distillation
+# prime-rl: On-Policy Distillation Research
 
-Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) for training ARC-AGI REPL agents with on-policy distillation (OPD).
+Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) for research on adaptive privileged information (PI) in on-policy distillation (OPD).
 
-## Project Goal
+## Research Focus
 
-Fine-tune Qwen3-8B as an ARC-AGI REPL agent. The model writes Python code in a multi-turn REPL to analyze grid patterns and produce predictions. Standard RL (GRPO) with sparse rewards doesn't work well for ARC — OPD provides dense per-token feedback from a teacher model to stabilize training.
+**Adaptive PI for OPD**: Standard OPD gives the teacher a static advantage (answer + reference solution). We explore *deliberative teaching* — the teacher generates an analysis of the student's specific mistakes before scoring, creating stronger, more targeted per-token feedback.
 
-## Current State
+**Key signal measurement result**: Blind deliberative PI beats answer_ref by ~19% in |KL| across all configs. Best-of-4 reaches +31-33%. This is fully self-supervised (no external knowledge needed). Details: `research/on-policy-distillation/experiments/opd-signal/FINDINGS.md`
 
-**Phase 0 is running.** Qwen3-8B student with Qwen3-32B frozen teacher on 4 GPUs (2 inference + 1 trainer + 1 teacher). Training config: `configs/arc_agi/opd-rl-qwen-8b.toml`. W&B project: `arc-agi-opd`.
+**Current challenge**: Signal doesn't yet translate to training gains. Gap analysis: `research/on-policy-distillation/experiments/training-verification/gap-analysis.md`. Pivot strategy: `research/on-policy-distillation/experiments/training-verification/pivot-strategy.md`.
 
-Phase 0 required 3 bug fixes in prime-rl (documented in `tmp/on-policy-distillation/prime-rl-implementation-notes.md`):
-1. Validator ordering for `teacher_tau` + `num_teacher_gpus` (`src/prime_rl/configs/rl.py:326-336`)
-2. Teacher prefill crash on long sequences — truncation + padding (`src/prime_rl/orchestrator/utils.py:146-190`)
-3. Teacher inference port conflict when using explicit `[teacher_inference]` config
+## Architecture: `prepare_teacher_context` Contract
 
-**Next:** Phase 1 — privileged-info teacher (inject ground truth into teacher prompt). Plan: `tmp/on-policy-distillation/phase1-privileged-teacher.md`.
+Each environment owns its teacher context preparation. The orchestrator discovers `prepare_teacher_context` via importlib:
 
-## Documentation
+```python
+# Contract (implemented per env, e.g. environments/aime/src/aime/teacher_context.py)
+async def prepare_teacher_context(analyzer_config: AnalyzerConfig, rollouts: list[dict]) -> list[dict]
+```
 
-- `tmp/on-policy-distillation/README.md` — Full index of all OPD docs
-- `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (next step)
-- `tmp/on-policy-distillation/prime-rl-implementation-notes.md` — Lessons from Phase 0
-- `tmp/on-policy-distillation/arc-agi-opd-plan.md` — Original phased plan (Phase 0–3)
-- `tmp/on-policy-distillation/opd-concepts.md` — OPD tutorial, all self-distillation variants
-- `tmp/on-policy-distillation/research-notes/` — Paper summaries and framework analyses
+- Env decides what PI to generate based on available data (ref solution, answer, rollout quality)
+- Correct rollouts can be skipped (no LLM call needed)
+- Uses litellm for external LLM calls (Gemini, etc.)
+- No shared analyzer module in prime-rl — envs own this entirely
 
 ## Key Commands
 
 ```bash
-# Install dependencies
-uv sync
+# Training
+python -m prime_rl.entrypoints.rl @ configs/aime/opd-self-teacher-8b.toml
 
-# Validate config without training
-uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml --dump-config .pydantic_config/arc_test
+# Evaluation
+prime eval run aime -a '{"dataset_name":"aime2025"}' -n 8 -r 4 -m MODEL -b URL -t MAX_TOKENS -T 0.6 --skip-upload -d
 
-# Run training (requires 4 GPUs: 2 inference + 1 trainer + 1 teacher)
-uv run rl @ configs/arc_agi/opd-rl-qwen-8b.toml
-
-# Check logs while running
+# Logs
 tail -F outputs/logs/orchestrator.stdout
-tail -F outputs/logs/trainer.stdout
-tail -F outputs/logs/inference.stdout
-tail -F outputs/logs/teacher_inference.stdout
-
-# Test environment loads
-uv run python -c "import verifiers as vf; env = vf.load_environment('arc-agi', dataset_name='arc-dummy', env_type='repl'); print(type(env))"
 ```
 
-## How OPD Works in prime-rl
+## How OPD Works
 
-1. Student generates rollouts (multi-turn REPL interactions)
-2. Teacher scores the same token sequence via prefill (no generation)
-3. Loss = `adv_tau * GRPO_advantage + teacher_tau * (teacher_logprobs - student_logprobs)`
-4. The teacher KL term provides dense per-token guidance
+1. Student generates rollouts on training problems
+2. (Optional) `prepare_teacher_context` generates adaptive PI per rollout
+3. Teacher scores the same token sequence via prefill (no generation), with PI injected into prompt
+4. Loss = `adv_tau * GRPO_advantage + teacher_tau * (teacher_logprobs - student_logprobs)`
 
 Key code:
-- Loss: `src/prime_rl/trainer/rl/loss.py:107-173`
-- Teacher logprobs: `src/prime_rl/orchestrator/utils.py:146-190`
-- Orchestrator call site: `src/prime_rl/orchestrator/orchestrator.py:530-544`
-- Multi-turn interleaving: `src/prime_rl/orchestrator/trajectories.py`
-- TrainingSample struct: `src/prime_rl/transport/types.py:5-22`
-
-## Local Modifications to prime-rl
-
-1. **`src/prime_rl/configs/rl.py:326-336`** — Fixed validator ordering bug. `validate_teacher_model` now allows `teacher_tau > 0` when `deployment.num_teacher_gpus > 0`.
-2. **`src/prime_rl/orchestrator/utils.py:146-190`** — Added `max_model_len` param to `compute_teacher_logprobs`. Truncates sequences exceeding teacher context window, pads logprobs with 0.0.
-3. **`pyproject.toml`** — Added `arc-agi` dependency with local path source in `[tool.uv.sources]`.
-4. **`environments/arc_agi/`** — ARC-AGI REPL environment (copied from rlvr).
-5. **`configs/arc_agi/opd-rl-qwen-8b.toml`** — Phase 0 training config.
+- Loss: `src/prime_rl/trainer/rl/loss.py`
+- Teacher logprobs + PI injection: `src/prime_rl/orchestrator/utils.py`
+- Orchestrator (env dispatch): `src/prime_rl/orchestrator/orchestrator.py`
+- Analyzer config: `src/prime_rl/configs/orchestrator.py`
 
 ## Repository Structure
 
 ```
 prime-rl/
 ├── src/prime_rl/
-│   ├── configs/              # Pydantic config models (rl.py, trainer.py, orchestrator.py, inference.py)
+│   ├── configs/              # Pydantic config models
 │   ├── entrypoints/rl.py     # Main entry — launches all processes
 │   ├── trainer/rl/           # Training loop + loss function
-│   ├── orchestrator/         # Orchestrator loop, teacher logprobs, trajectories
+│   ├── orchestrator/         # Orchestrator loop, teacher logprobs, env dispatch
 │   ├── inference/            # vLLM inference server
 │   └── transport/types.py    # TrainingSample, TrainingBatch structs
-├── environments/arc_agi/     # ARC-AGI REPL environment
-│   ├── src/arc_agi/          # env.py, data.py, rewards.py, envs/repl.py
-│   └── data/                 # ARC datasets (2024, 2025, dummy)
-├── configs/arc_agi/          # Training configs
-└── tmp/on-policy-distillation/  # Research docs, plans, notes
+├── environments/
+│   ├── aime/                 # AIME math competition env + teacher_context.py
+│   └── arc_agi/              # ARC-AGI REPL environment
+├── configs/
+│   ├── aime/                 # AIME training configs (self-teacher, deliberative, etc.)
+│   └── arc_agi/              # ARC-AGI training configs
+├── research/                 # Organized research docs, papers, notes
+└── tmp/on-policy-distillation/  # Active experiment logs and analysis
 ```
 
-## Config Reference
+## Research Documentation
 
-Configs use TOML, passed via `@` syntax: `uv run rl @ config.toml`.
+See `research/on-policy-distillation/README.md` for the full index. Key docs:
 
-Key OPD settings in `configs/arc_agi/opd-rl-qwen-8b.toml`:
-- `trainer.loss.teacher_tau = 0.3` — Distillation strength (0 = pure RL)
-- `trainer.loss.adv_tau = 1.0` — RL reward signal (hybrid: both active)
-- `deployment.num_teacher_gpus = 1` — Enables teacher inference server
-- `[teacher_inference]` — Separate config for teacher model (Qwen3-32B, port 8032)
-- `orchestrator.env[].args.env_type = "repl"` — Multi-turn REPL environment
-- `orchestrator.env[].args.reward_mode = "balanced"` — Balanced reward weighting
+- **Signal measurement**: `research/on-policy-distillation/experiments/opd-signal/FINDINGS.md`
+- **Gap analysis**: `research/on-policy-distillation/experiments/training-verification/gap-analysis.md`
+- **Pivot strategy**: `research/on-policy-distillation/experiments/training-verification/pivot-strategy.md`
+- **Training management**: `research/on-policy-distillation/experiments/prime-rl-training-management-guide.md`
+- **Literature reviews**: `research/on-policy-distillation/experiments/literature-review-{1,2}.md`
 
-## ARC-AGI Environment
+## Training Lessons
 
-The REPL env (`environments/arc_agi/src/arc_agi/envs/repl.py`):
-- Model receives ARC task (training I/O pairs + test input) as system prompt
-- Each turn: model writes Python code, env executes it, returns stdout/stderr
-- Model calls `SUBMIT(test=[...])` to submit predictions
-- Reward: grid accuracy (balanced = binary + partial credit)
-- Ground truth is in `info["test"][i]["output"]` — available for Phase 1 privileged teacher
-
-Environment args: `dataset_name`, `env_type` ("repl"/"iterative"), `reward_mode` ("binary"/"partial"/"balanced"), `max_turns`, `eval_dataset`, `eval_split`.
-
-## Hardware
-
-4 GPUs (A100 80GB):
-- GPUs 0-1: Student inference (Qwen3-8B, DP=2)
-- GPU 2: Trainer (LoRA r=32)
-- GPU 3: Teacher inference (Qwen3-32B, bf16, gpu_mem_util=0.90)
+- **Qwen3**: Disable thinking mode via `chat_template_kwargs = {enable_thinking = false}`
+- **OOM with 32K**: Use `fused_lm_head_chunk_size = 8192` in `[trainer.model]`
+- **16K too short for AIME**: 80% truncation. 32K gives 20% truncation
+- **Check first 10 steps**: truncation rate + mismatch_kl are early health signals
+- **Kill zombie vLLM**: Always kill old vLLM processes before re-launching

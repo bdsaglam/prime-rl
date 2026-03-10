@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import re
 import time
 from itertools import cycle
 from pathlib import Path
@@ -184,18 +185,123 @@ def build_teacher_prompt_ids(
     )
 
 
+DEFAULT_DELIBERATIVE_PROMPT = """You are an expert math teacher analyzing a student's work.
+Carefully read the problem and the student's attempt below. You do NOT know the correct answer.
+Your job is to analyze the student's reasoning process in depth:
+1. What approach/strategy did the student use?
+2. Trace through the key reasoning steps — are they logically valid?
+3. Identify any specific steps where errors might have occurred and why.
+4. Assess the overall quality: Is the reasoning sound? Are there gaps?
+5. What should the student have done differently?
+Be specific about which steps are good and which are problematic."""
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> blocks from text."""
+    return _THINK_RE.sub("", text).strip()
+
+
+async def generate_deliberative_analyses(
+    clients: list[vf.ClientConfig],
+    model_name: str,
+    rollouts: list[dict],
+    system_prompt: str | None = None,
+    max_tokens: int = 1024,
+    temperature: float = 0.3,
+    max_model_len: int = 32768,
+) -> list[str]:
+    """Generate deliberative analyses for student rollouts using the teacher model.
+
+    For each rollout, calls the teacher to analyze the student's work (blind — no answer).
+    Returns a list of analysis strings, one per rollout.
+
+    Think tags are stripped from the teacher's analysis output so that only the
+    substantive analysis is used as privileged information. Student rollouts are
+    sent to the teacher unmodified.
+    """
+    prompt = system_prompt or DEFAULT_DELIBERATIVE_PROMPT
+
+    async def _generate_single(
+        client_config: vf.ClientConfig,
+        rollout: dict,
+    ) -> str:
+        client = setup_openai_client(client_config)
+
+        # Extract problem and student response from rollout
+        trajectory = rollout["trajectory"]
+        messages = trajectory[0]["prompt"]
+
+        # Find the user message (problem)
+        problem_text = ""
+        for msg in messages:
+            if msg["role"] == "user":
+                content = msg["content"]
+                if isinstance(content, str):
+                    problem_text = content
+                break
+
+        # Get student response from completion messages (all assistant turns concatenated)
+        student_response = ""
+        for step in trajectory:
+            for msg in step.get("completion", []):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        student_response += content + "\n"
+
+        # Truncate student response to fit within context. We need room for:
+        # system prompt + problem + framing + max_tokens for output.
+        # Use conservative ratio of 2 chars/token to avoid exceeding context.
+        overhead_tokens = 512  # system prompt, problem, chat template overhead
+        input_budget_tokens = max_model_len - max_tokens - overhead_tokens
+        input_budget_chars = max(1000, input_budget_tokens * 2)  # 2 chars/token = very conservative
+        if len(student_response) > input_budget_chars:
+            student_response = student_response[:input_budget_chars] + "\n[... truncated for context length ...]"
+
+        # Use conservative token estimate (2 chars/token) to cap max_tokens
+        estimated_input_tokens = (len(prompt) + len(problem_text) + len(student_response) + 200) // 2
+        effective_max_tokens = min(max_tokens, max(256, max_model_len - estimated_input_tokens - 100))
+
+        async with await get_semaphore():
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Problem:\n{problem_text}\n\nStudent's attempt:\n{student_response}"},
+                ],
+                max_tokens=effective_max_tokens,
+                temperature=temperature,
+            )
+
+        analysis = response.choices[0].message.content or ""
+        # Strip <think>...</think> from teacher's analysis — use only the substantive output
+        return _strip_think_tags(analysis)
+
+    return await asyncio.gather(*[
+        _generate_single(client, rollout)
+        for client, rollout in zip(cycle(clients), rollouts)
+    ])
+
+
 async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
     max_model_len: int | None = None,
     teacher_prompt_ids_list: list[list[int] | None] | None = None,
+    use_tito: bool = True,
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill.
 
     If teacher_prompt_ids_list is provided, uses privileged prompts instead of
     sample.prompt_ids (Phase 1 OPD). The returned logprobs are always aligned to
     the student's sequence length (len(prompt_ids) + len(completion_ids)).
+
+    Args:
+        use_tito: If True, use prime-rl's /chat/completions/tokens endpoint.
+            If False, use standard /v1/completions with prompt_logprobs (for external vLLM servers).
     """
 
     async def _compute_single(
@@ -215,24 +321,44 @@ async def compute_teacher_logprobs(
             all_tokens = all_tokens[: max_model_len - 1]
 
         async with await get_semaphore():
-            response = await client.post(
-                "/chat/completions/tokens",
-                body={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": ""}],
-                    "tokens": all_tokens,
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "skip_special_tokens": False,
-                    "prompt_logprobs": True,
-                },
-                cast_to=ChatCompletion,
-            )
-        raw_logprobs = [
-            0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
-            for lp in getattr(response, "prompt_logprobs", [])
-        ]
+            if use_tito:
+                response = await client.post(
+                    "/chat/completions/tokens",
+                    body={
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": ""}],
+                        "tokens": all_tokens,
+                        "max_tokens": 1,
+                        "temperature": 1.0,
+                        "top_p": 1.0,
+                        "skip_special_tokens": False,
+                        "prompt_logprobs": True,
+                    },
+                    cast_to=ChatCompletion,
+                )
+                raw_logprobs = [
+                    0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
+                    for lp in getattr(response, "prompt_logprobs", [])
+                ]
+            else:
+                # Standard vLLM completions endpoint — works with any vLLM server.
+                # prompt_logprobs is a vLLM extension, so we access it from the
+                # response's underlying model data via choices[0].
+                response = await client.completions.create(
+                    model=model_name,
+                    prompt=all_tokens,
+                    max_tokens=1,
+                    temperature=1.0,
+                    top_p=1.0,
+                    extra_body={"prompt_logprobs": 1},
+                )
+                # vLLM puts prompt_logprobs on choices[0] as an extension field
+                choice = response.choices[0]
+                prompt_lps = getattr(choice, "prompt_logprobs", None) or []
+                raw_logprobs = [
+                    0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
+                    for lp in prompt_lps
+                ]
 
         if teacher_prompt_ids is not None:
             # Phase 1: privileged prompt is longer — extract completion logprobs and align

@@ -1,0 +1,108 @@
+# AIME Deliberative OPD: willcb/Qwen3-8B student + 8B self-teacher (blind deliberative PI)
+# Treatment condition: teacher analyzes student rollouts before scoring.
+# Compare against baseline: opd-self-teacher-8b.toml (answer_only PI)
+# 4× A100 80GB: 1 train + 2 infer + 1 teacher
+
+max_steps = 22
+seq_len = 32768
+output_dir = "outputs/aime-deliberative-opd-8b-willcb"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "aime-opd"
+name = "aime-deliberative-opd-8b-willcb"
+
+[ckpt]
+interval = 11
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 0.3
+adv_tau = 1.0
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+[[orchestrator.env]]
+id = "aime"
+name = "aime"
+args = { dataset_name = "aimo-validation-aime" }
+
+# No buffer filtering — OPD teacher signal works on all examples
+# [orchestrator.buffer]
+
+[orchestrator.eval]
+interval = 11
+rollouts_per_example = 4
+
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-2025"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples = 8 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+# --- Deliberative Teacher Config ---
+[orchestrator.teacher_model]
+deliberative = true
+deliberative_max_tokens = 4096
+deliberative_temperature = 0.3
+
+# --- Student Inference (8B) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
+
+# --- Teacher Inference (8B self-teacher) ---
+[teacher_inference]
+gpu_memory_utilization = 0.9
+
+[teacher_inference.server]
+port = 8001
+
+[teacher_inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"

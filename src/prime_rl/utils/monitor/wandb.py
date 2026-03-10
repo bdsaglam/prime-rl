@@ -56,7 +56,7 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "task", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "task", "example_id", "messages", "input_ids", "reward", "teacher_context"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
@@ -108,6 +108,15 @@ class WandbMonitor(Monitor):
             tokens = last_step["tokens"]
             full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
             messages_text = self.tokenizer.decode(full_ids)
+            # Extract teacher_context from rollout info (may be original answer or deliberative analysis)
+            info = rollout.get("info", {})
+            if isinstance(info, str):
+                try:
+                    info = json.loads(info)
+                except (json.JSONDecodeError, TypeError):
+                    info = {}
+            teacher_context = info.get("teacher_context", "") if isinstance(info, dict) else ""
+
             sample = {
                 "step": step,
                 "task": rollout.get("task"),
@@ -115,6 +124,7 @@ class WandbMonitor(Monitor):
                 "messages": messages_text,
                 "input_ids": str(full_ids),
                 "reward": rollout["reward"],
+                "teacher_context": teacher_context,
             }
             assert list(sample.keys()) == self.samples_cols, (
                 "Order of columns in the table must be the same as order of the keys here"

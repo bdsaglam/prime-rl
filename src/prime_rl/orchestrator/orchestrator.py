@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import multiprocessing as mp
 import random
 import time
@@ -37,6 +38,7 @@ from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     build_teacher_prompt_ids,
     compute_teacher_logprobs,
+    generate_deliberative_analyses,
     get_sampling_args,
     get_weight_dir,
     print_benchmark,
@@ -69,6 +71,36 @@ from prime_rl.utils.utils import (
     to_col_format,
 )
 from prime_rl.utils.vlm import is_vlm_model
+
+
+def _get_prepare_teacher_context(env_ids: list[str]):
+    """Discover env-specific prepare_teacher_context functions.
+
+    Returns a dict mapping env_id -> prepare_teacher_context callable.
+    Only includes envs that actually provide the function.
+    """
+    import importlib
+
+    _logger = logging.getLogger(__name__)
+    env_preparers = {}
+    for env_id in set(env_ids):
+        try:
+            mod = importlib.import_module(env_id)
+            fn = getattr(mod, "prepare_teacher_context", None)
+            if fn is not None:
+                env_preparers[env_id] = fn
+                _logger.info(f"Found prepare_teacher_context for '{env_id}'")
+            else:
+                _logger.warning(
+                    f"Analyzer configured but '{env_id}' does not provide prepare_teacher_context — "
+                    f"teacher_context will not be updated for this env"
+                )
+        except ImportError:
+            _logger.warning(
+                f"Analyzer configured but '{env_id}' module not importable — "
+                f"teacher_context will not be updated for this env"
+            )
+    return env_preparers
 
 
 def _build_teacher_prompts(
@@ -214,6 +246,9 @@ async def orchestrate(config: OrchestratorConfig):
         env_names=train_env_names,
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
+
+    # Discover env-specific prepare_teacher_context functions (if analyzer is configured)
+    teacher_context_preparers = _get_prepare_teacher_context(env_ids) if config.analyzer else {}
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
@@ -584,6 +619,50 @@ async def orchestrate(config: OrchestratorConfig):
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
+            # Prepare teacher context via env-specific or default function
+            if config.analyzer and teacher_context_preparers:
+                logger.info(f"Preparing teacher context for {len(train_rollouts)} rollouts using {config.analyzer.model}")
+                analyzer_start = time.perf_counter()
+
+                # Group rollouts by env for env-specific preparation
+                env_name_to_id = dict(zip(train_env_names, env_ids))
+                rollouts_by_env: dict[str, list[dict]] = {}
+                for rollout in train_rollouts:
+                    env_id = env_name_to_id.get(rollout["task"], env_ids[0])
+                    rollouts_by_env.setdefault(env_id, []).append(rollout)
+
+                # Call env-specific prepare_teacher_context for each group
+                for env_id, env_rollouts in rollouts_by_env.items():
+                    preparer = teacher_context_preparers.get(env_id)
+                    if preparer is not None:
+                        await preparer(config.analyzer, env_rollouts)
+
+                analyzer_time = time.perf_counter() - analyzer_start
+                logger.info(f"Prepared teacher context for {len(train_rollouts)} rollouts in {analyzer_time:.1f}s")
+            # Legacy: generate deliberative analyses using teacher model if enabled
+            elif config.teacher_model.deliberative:
+                logger.info(f"Generating deliberative analyses for {len(train_rollouts)} rollouts")
+                delib_start = time.perf_counter()
+                analyses = await generate_deliberative_analyses(
+                    clients=teacher_inference_pool.clients,
+                    model_name=config.teacher_model.model.name,
+                    rollouts=train_rollouts,
+                    system_prompt=config.teacher_model.deliberative_prompt,
+                    max_tokens=config.teacher_model.deliberative_max_tokens,
+                    temperature=config.teacher_model.deliberative_temperature,
+                    max_model_len=config.teacher_model.max_model_len or 32768,
+                )
+                # Replace teacher_context in rollout info with the deliberative analysis
+                for rollout, analysis in zip(train_rollouts, analyses):
+                    info = rollout["info"]
+                    if isinstance(info, str):
+                        info = json.loads(info)
+                        rollout["info"] = info
+                    if isinstance(info, dict):
+                        info["teacher_context"] = analysis
+                delib_time = time.perf_counter() - delib_start
+                logger.info(f"Generated {len(analyses)} deliberative analyses in {delib_time:.1f}s")
+
             # Build privileged teacher prompts if teacher_context is available in data
             teacher_prompt_ids_list = _build_teacher_prompts(
                 train_rollouts, results, tokenizer, config.teacher_model.chat_template_kwargs or None
@@ -602,6 +681,7 @@ async def orchestrate(config: OrchestratorConfig):
                 samples=train_examples,
                 max_model_len=config.teacher_model.max_model_len or config.seq_len,
                 teacher_prompt_ids_list=teacher_prompt_ids_list if num_privileged > 0 else None,
+                use_tito=config.teacher_model.use_tito,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs

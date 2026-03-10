@@ -78,13 +78,13 @@ max_model_len = 40000
 dtype = "bfloat16"
 
 # --- Teacher Inference (external server via SSH tunnel) ---
-# Remote: 144.122.52.26 running vllm serve willcb/Qwen3-32B --port 8032
-# Tunnel: ssh -N -L 8032:localhost:8032 144.122.52.26
+# Remote: 144.122.52.7 running vllm serve willcb/Qwen3-32B --port 8932
+# Tunnel: ssh -N -L 8932:localhost:8932 144.122.52.7
 [orchestrator.teacher_model.client]
-base_url = ["http://localhost:8032/v1"]
+base_url = ["http://localhost:8932/v1"]
 
 [orchestrator.teacher_model.model]
 name = "willcb/Qwen3-32B"
 
 [orchestrator.teacher_model]
-max_model_len = 20000
+max_model_len = 31000

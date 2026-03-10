@@ -674,6 +674,68 @@ class TeacherModelConfig(BaseConfig):
         Field(description="Extra kwargs passed to tokenizer.apply_chat_template when building teacher prompts (e.g. enable_thinking=false)."),
     ] = {}
 
+    deliberative: Annotated[
+        bool,
+        Field(description="Enable deliberative teaching: teacher generates an analysis of each student rollout before scoring. The analysis replaces the static teacher_context as privileged information."),
+    ] = False
+
+    deliberative_max_tokens: Annotated[
+        int,
+        Field(description="Maximum tokens for the deliberative analysis generation."),
+    ] = 1024
+
+    deliberative_temperature: Annotated[
+        float,
+        Field(description="Temperature for deliberative analysis generation."),
+    ] = 0.3
+
+    deliberative_prompt: Annotated[
+        str | None,
+        Field(description="Custom system prompt for deliberative analysis. If None, uses the default blind analysis prompt."),
+    ] = None
+
+    use_tito: Annotated[
+        bool,
+        Field(description="Use prime-rl's /chat/completions/tokens endpoint for teacher logprobs. Set to false for external vLLM servers that don't have the TITO extension."),
+    ] = True
+
+
+class AnalyzerConfig(BaseConfig):
+    """Configures the analyzer model for generating privileged information for the teacher.
+
+    The analyzer is decoupled from the teacher: it reads the student's rollout plus any
+    available reference info (answer, solution) and produces rich analysis text that
+    becomes the teacher's privileged context for logprob computation.
+
+    Uses litellm for model-agnostic API routing (e.g. gemini/gemini-3-flash, openai/gpt-4o,
+    anthropic/claude-sonnet-4-20250514, or any vLLM endpoint via openai/ prefix).
+    """
+
+    model: Annotated[
+        str,
+        Field(description="litellm model string (e.g. 'gemini/gemini-3-flash', 'openai/gpt-4o')."),
+    ] = "gemini/gemini-3-flash-preview"
+
+    max_tokens: Annotated[
+        int,
+        Field(description="Maximum tokens for the analysis output (includes reasoning tokens for thinking models)."),
+    ] = 65536
+
+    temperature: Annotated[
+        float,
+        Field(description="Temperature for analysis generation."),
+    ] = 0.3
+
+    system_prompt: Annotated[
+        str | None,
+        Field(description="Custom system prompt for analysis. If None, uses the default prompt."),
+    ] = None
+
+    max_concurrent: Annotated[
+        int,
+        Field(description="Maximum number of concurrent API calls to the analyzer."),
+    ] = 16
+
 
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
@@ -694,6 +756,16 @@ class OrchestratorConfig(BaseSettings):
             description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
             "If provided, teacher logprobs will be computed using the specified model. "
             "If None, no teacher model will be used."
+        ),
+    ] = None
+
+    # The analyzer configuration (optional, generates privileged info for teacher)
+    analyzer: Annotated[
+        AnalyzerConfig | None,
+        Field(
+            description="Analyzer model for generating privileged information from student rollouts. "
+            "The analyzer reads the student's work plus reference info and produces analysis text "
+            "that becomes the teacher's privileged context. Uses litellm for API routing."
         ),
     ] = None
 

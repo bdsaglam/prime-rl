@@ -1,0 +1,105 @@
+# Verification v2: Cross-Teacher OPD Baseline (answer_only PI)
+# Train on AIME 2025 problems 0-21 (harder), eval on 22-29 (non-overlapping)
+# 8B student + 32B external teacher, pure OPD, bs=32
+# 4x A100 80GB: 1 train + 3 infer. Teacher on external server.
+
+max_steps = 20
+seq_len = 32768
+output_dir = "outputs/aime-verify-baseline-v2"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 3
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "aime-opd"
+name = "verify-baseline-v2"
+
+[ckpt]
+interval = 10
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 1.0
+adv_tau = 0.0          # Pure OPD — no GRPO reward signal
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+# Train on AIME 2025 problems 0-21 (22 problems)
+[[orchestrator.env]]
+id = "aime"
+name = "aime"
+args = { dataset_name = "aime2025", num_train_examples = 22 }
+
+[orchestrator.eval]
+interval = 10
+rollouts_per_example = 4
+
+# Eval on AIME 2025 problems 22-29 (8 problems, non-overlapping)
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-heldout"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", eval_start_index = 22, num_eval_examples = 8 }
+
+# Also eval on training problems to measure learning
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-train"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples = 22 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- External Teacher (32B on remote server) ---
+[orchestrator.teacher_model]
+max_model_len = 32768
+use_tito = false
+
+[orchestrator.teacher_model.client]
+base_url = ["http://localhost:8932/v1"]
+
+[orchestrator.teacher_model.model]
+name = "willcb/Qwen3-32B"
+
+# --- Student Inference (8B, 3 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"

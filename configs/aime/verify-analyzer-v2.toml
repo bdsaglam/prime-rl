@@ -1,0 +1,120 @@
+# Verification v2: Cross-Teacher OPD with Analyzer (Gemini 3 Flash)
+# Train on AIME 2025 problems 0-21 (harder), eval on 22-29 (non-overlapping)
+# 8B student + 32B local teacher, pure OPD, bs=32
+# Analyzer (Gemini 3 Flash) generates rich analysis of student rollouts.
+# Teacher (32B) is conditioned on the analysis for logprob computation.
+# 4x A100 80GB: 1 train + 2 infer (student 8B) + 1 teacher (32B)
+
+max_steps = 20
+seq_len = 32768
+output_dir = "outputs/aime-verify-analyzer-v2"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "aime-opd"
+name = "verify-analyzer-v2"
+
+[ckpt]
+interval = 10
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 1.0
+adv_tau = 0.0          # Pure OPD — no GRPO reward signal
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+# Train on AIME 2025 problems 0-21 (22 problems)
+[[orchestrator.env]]
+id = "aime"
+name = "aime"
+args = { dataset_name = "aime2025", num_train_examples = 22 }
+
+[orchestrator.eval]
+interval = 10
+rollouts_per_example = 4
+
+# Eval on AIME 2025 problems 22-29 (8 problems, non-overlapping)
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-heldout"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", eval_start_index = 22, num_eval_examples = 8 }
+
+# Also eval on training problems to measure learning
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-train"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples = 22 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- Analyzer (Gemini 3 Flash via litellm) ---
+[orchestrator.analyzer]
+model = "gemini/gemini-3-flash-preview"
+max_tokens = 65536
+temperature = 0.3
+max_concurrent = 16
+
+# --- Teacher (32B, local, logprobs only — auto-configured by num_teacher_gpus) ---
+[orchestrator.teacher_model]
+max_model_len = 32768
+
+[orchestrator.teacher_model.model]
+name = "willcb/Qwen3-32B"
+
+# --- Teacher Inference (32B, 1 GPU) ---
+[teacher_inference.server]
+port = 8001
+
+[teacher_inference.model]
+name = "willcb/Qwen3-32B"
+max_model_len = 32768
+dtype = "bfloat16"
+
+# --- Student Inference (8B, 2 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
