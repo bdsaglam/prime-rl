@@ -12,25 +12,33 @@ Fine-tune Qwen3-8B as an ARC-AGI REPL agent. The model writes Python code in a m
 
 Training config: `configs/arc_agi/opd-rl-qwen-8b-teacher-context.toml`. W&B project: `arc-agi-opd`, runs: `axjc8tnp` (trainer), `02l4zaq7` (orchestrator). Checkpoints at steps 10 and 20.
 
-Phase 0 required 3 bug fixes in prime-rl (documented in `tmp/on-policy-distillation/prime-rl-implementation-notes.md`):
+Phase 0 required 3 bug fixes in prime-rl (documented in `research/on-policy-distillation/implementation-notes/prime-rl-implementation-notes.md`):
 1. Validator ordering for `teacher_tau` + `num_teacher_gpus` (`src/prime_rl/configs/rl.py:326-336`)
 2. Teacher prefill crash on long sequences — truncation + padding (`src/prime_rl/orchestrator/utils.py:146-190`)
 3. Teacher inference port conflict when using explicit `[teacher_inference]` config
 
-**Next:** Phase 1.5 — hint-assisted curriculum learning. Plan: `tmp/on-policy-distillation/phase1.5-hint-curriculum.md`.
+**Next:** Phase 1.5 — hint-assisted curriculum learning. Plan: `research/on-policy-distillation/phase1.5-hint-curriculum.md`.
 
 ## Documentation
 
-- `tmp/on-policy-distillation/agent-workflow.md` — Agent workflow (your way of working, IMPORTANT doc)
-- `tmp/on-policy-distillation/README.md` — Full index of all OPD docs
-- `tmp/on-policy-distillation/phase1.5-hint-curriculum.md` — **Phase 1.5 plan (current — next step)**
-- `tmp/on-policy-distillation/phase1-privileged-teacher.md` — Phase 1 plan (completed, didn't work)
-- `tmp/on-policy-distillation/prime-rl-implementation-notes.md` — Lessons from Phase 0
-- `tmp/on-policy-distillation/arc-agi-opd-plan.md` — Original phased plan (Phase 0–3)
-- `tmp/on-policy-distillation/opd-concepts.md` — OPD tutorial, all self-distillation variants
-- `tmp/on-policy-distillation/rl-training-management-guide.md` — **Training management guide** — crash recovery, metric dashboards, failure diagnosis, hyperparameter tuning, tmux conventions
-- `tmp/on-policy-distillation/research-notes/` — Paper summaries and framework analyses
-- `scratchpad.md` — Inference server commands and eval recipes for various models
+All research docs live in `research/on-policy-distillation/`. See the [README](research/on-policy-distillation/README.md) for the full index.
+
+### Agent Workflow (IMPORTANT)
+- `research/agent-workflow.md` — Your modus operandi for how to manage long-running tasks: tmux conventions, heartbeat pattern, background task management, GPU lifecycle. **Read this before launching training or inference.**
+
+### Experiments
+- `research/on-policy-distillation/experiments/arc-agi-opd/` — ARC-AGI training (Phase 0–1.5)
+- `research/on-policy-distillation/experiments/opd-repro/` — OPD pipeline verification on math
+- `research/on-policy-distillation/experiments/prime-rl-training-management-guide.md` — Training management guide
+
+### Implementation Notes
+- `research/on-policy-distillation/implementation-notes/` — Setup guides, framework analyses, bug fixes
+
+### Research
+- `research/on-policy-distillation/research-notes/opd-concepts.md` — OPD tutorial, all self-distillation variants
+- `research/on-policy-distillation/research-notes/` — Conceptual docs and design explorations
+- `research/on-policy-distillation/papers/` — Paper summaries and PDFs
+- `research/scratchpad.md` — Miscellaneous commands captured for future re-use/reference
 
 ## Key Commands
 
@@ -95,14 +103,14 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-32B \
 
 ```bash
 # Quick smoke test (1 puzzle, 1 rollout)
-prime eval run arc-agi -x '{"dataset_name":"arc-dummy"}' -n 1 -r 1 -m MODEL_NAME -b http://0.0.0.0:8900/v1
+prime eval run arc-agi -a '{"dataset_name":"arc-dummy"}' -n 1 -r 1 -m MODEL_NAME -b http://0.0.0.0:8900/v1
 
 # Full eval on training split (4 puzzles, 3 rollouts each)
-prime eval run arc-agi -x '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m MODEL_NAME -b http://0.0.0.0:8900/v1
+prime eval run arc-agi -a '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m MODEL_NAME -b http://0.0.0.0:8900/v1
 ```
 
 `prime eval run` flags:
-- `-x '{"dataset_name":"..."}'` — env args JSON (same as `orchestrator.env[].args` in TOML)
+- `-a '{"dataset_name":"..."}'` — env args JSON (same as `orchestrator.env[].args` in TOML)
 - `-n N` — number of examples to evaluate
 - `-r R` — rollouts per example (more = better estimate, slower)
 - `-m MODEL` — model name (must match what vLLM is serving)
@@ -147,7 +155,12 @@ prime-rl/
 │   ├── src/arc_agi/          # env.py, data.py, rewards.py, envs/repl.py
 │   └── data/                 # ARC datasets (2024, 2025, dummy)
 ├── configs/arc_agi/          # Training configs
-└── tmp/on-policy-distillation/  # Research docs, plans, notes
+└── research/on-policy-distillation/  # Research docs, experiments, papers
+    ├── experiments/           # Experiment spikes (arc-agi-opd/, opd-repro/)
+    ├── implementation-notes/  # Setup guides, framework analyses, bug fixes
+    ├── research-notes/        # Conceptual docs and design explorations
+    └── papers/                # Paper summaries and PDFs
+    agent-workflow.md          # Your modus operandi
 ```
 
 ## Config Reference
@@ -178,4 +191,4 @@ Environment args: `dataset_name`, `env_type` ("repl"/"iterative"), `reward_mode`
 4 GPUs (A100 80GB):
 - GPUs 0-1: Student inference (Qwen3-8B, DP=2)
 - GPU 2: Trainer (LoRA r=32)
-- GPU 3: Teacher inference (Qwen3-32B, bf16, gpu_mem_util=0.90)
+- GPU 3: Teacher inference 

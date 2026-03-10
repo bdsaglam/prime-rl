@@ -306,3 +306,51 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve willcb/Qwen3-32B \
     --enable-auto-tool-choice --tool-call-parser hermes
 
 prime eval run arc-agi -x '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m willcb/Qwen3-32B -b http://0.0.0.0:8932/v1
+
+# Qwen3.5-27B
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3.5-27B \
+    --port 8907 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --max-model-len 32768 \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser hermes \
+    --language-model-only \
+    --enforce-eager \
+    --enable-prefix-caching
+
+prime eval run arc-agi -a '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m Qwen/Qwen3.5-27B -b http://0.0.0.0:8907/v1
+
+# Qwen3.5-9B
+
+docker run --runtime nvidia --gpus all \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    -p 8907:8907 \
+    --ipc=host \
+    vllm/vllm-openai:latest \
+    --port 8907 \
+    --model Qwen/Qwen3.5-9B \
+    --async-scheduling \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.80 \
+    --dtype bfloat16 \
+    --max-model-len 65536 \
+    --reasoning-parser qwen3 \
+    --enable-prefix-caching
+
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3.5-9B \
+    --port 8907 \
+    --data-parallel-size 4 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --max-model-len 32768 \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser hermes \
+    --enforce-eager \
+    --enable-prefix-caching 
+
+prime eval run arc-agi -a '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m Qwen/Qwen3.5-9B -b http://0.0.0.0:8907/v1
