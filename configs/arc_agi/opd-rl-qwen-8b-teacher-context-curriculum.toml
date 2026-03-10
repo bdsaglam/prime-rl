@@ -51,7 +51,6 @@ max_concurrent = 64
 
 [orchestrator.sampling]
 temperature = 1.0
-top_k = 20                 # Qwen3 recommended — cuts off low-prob garbage tokens
 max_tokens = 2048
 
 [orchestrator.sampling.extra_body]
