@@ -12,7 +12,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step, get_eval_sampling_args
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout
+from prime_rl.orchestrator.trajectories import build_vlm_image_cache, interleave_rollout, offload_images_to_disk
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir
 
@@ -415,10 +415,6 @@ async def orchestrate(config: OrchestratorConfig):
     is_first_step = True
     await set_semaphore(config.max_concurrent or -1)
 
-    # Track consecutive empty batches for retry logic
-    empty_batch_retries = 0
-    max_empty_batch_retries = 5
-
     # Persistent ThreadPoolExecutor for parallel rollout processing
     rollout_executor = ThreadPoolExecutor(max_workers=64)
 
@@ -535,6 +531,15 @@ async def orchestrate(config: OrchestratorConfig):
         generate_completions_time = scheduler.last_batch_generation_time
         train_rollouts = train_task.result()
 
+        # VLM: offload base64 images to disk immediately to free memory
+        if is_vlm:
+            offload_start = time.perf_counter()
+            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+            if num_offloaded:
+                logger.info(
+                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                )
+
         # Apply rollout filters (zeros reward/mask for degenerate generations)
         filter_metrics = apply_filters(rollout_filters, train_rollouts)
 
@@ -640,25 +645,6 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        # Retry with exponential backoff if batch is empty (e.g., inference temporarily unavailable)
-        if len(training_batch.examples) == 0:
-            empty_batch_retries += 1
-            if empty_batch_retries >= max_empty_batch_retries:
-                raise RuntimeError(
-                    f"Step {progress.step} failed after {max_empty_batch_retries} consecutive empty batches"
-                )
-            backoff = min(30 * (2 ** (empty_batch_retries - 1)), 300)  # 30s, 60s, 120s, 240s, 300s cap
-            logger.warning(
-                f"Step {progress.step} produced 0 training samples "
-                f"(attempt {empty_batch_retries}/{max_empty_batch_retries}). Retrying in {backoff}s..."
-            )
-            # Cancel validation task to avoid accumulating background tasks
-            val_task.cancel()
-            await asyncio.sleep(backoff)
-            continue
-
-        # Reset retry counter on successful batch
-        empty_batch_retries = 0
         training_batch_sender.send(training_batch)
 
         # Await and process val results
