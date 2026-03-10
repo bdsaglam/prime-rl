@@ -5,6 +5,7 @@ import multiprocessing as mp
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import tomli_w
 
@@ -176,6 +177,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer for {config.model.name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+    if config.model.chat_template is not None:
+        template = config.model.chat_template
+        if template.endswith(".jinja"):
+            template = Path(template).read_text()
+        tokenizer.chat_template = template
+        logger.info(f"Overriding tokenizer chat template (len={len(template)})")
 
     processor = None
     if is_vlm:

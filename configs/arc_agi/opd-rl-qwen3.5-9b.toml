@@ -1,0 +1,130 @@
+# OPD + GRPO: Qwen3.5-9B student, Qwen3.5-27B teacher
+# Fresh training on ARC-AGI 2024 with on-policy distillation.
+#
+# Qwen3.5 notes:
+#   - Multimodal arch → need language_model_only for text-only vLLM
+#   - Default chat template strips <think> blocks from intermediate turns,
+#     breaking the extension property for multi-turn RL training.
+#     We override with qwen3.5-rl.jinja (keeps thinking but doesn't
+#     strip it from prior turns).
+#
+# GPU allocation (4x A100 80GB):
+#   GPUs 0-1: Student inference (9B, DP=2)
+#   GPU 2:    Trainer (LoRA r=32)
+#   GPU 3:    Teacher inference (27B, 1 GPU)
+
+max_steps = 200
+seq_len = 32768
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+# Override chat template for orchestrator tokenizer (must match inference server template)
+[orchestrator.model]
+chat_template = "configs/arc_agi/qwen3.5-rl.jinja"
+
+[wandb]
+project = "arc-agi-opd"
+name = "arc-agi-qwen3.5-9b-opd"
+
+[ckpt]
+interval = 10
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_token_chunk_size = "auto"
+optim_cpu_offload = true
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+pin_memory = true
+max_inflight_activations = 5
+
+[trainer.loss]
+teacher_tau = 0.5
+adv_tau = 1.0
+
+[trainer.optim]
+lr = 5e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+oversampling_factor = 2.0
+max_concurrent = 64
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 2048
+
+[[orchestrator.env]]
+id = "arc-agi"
+name = "arc-agi-repl"
+args = { dataset_name = "arc-prize-2024", eval_dataset = "arc-prize-2024", eval_split = "evaluation", max_turns = 10 }
+
+[orchestrator.eval]
+interval = 25
+rollouts_per_example = 4
+num_examples = 8
+
+[[orchestrator.eval.env]]
+id = "arc-agi"
+name = "arc-agi-eval"
+args = { dataset_name = "arc-prize-2024", split = "evaluation", max_turns = 10 }
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 10
+
+# --- Inference (student: Qwen3.5-9B on 2 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.90
+
+[inference.model]
+name = "Qwen/Qwen3.5-9B"
+max_model_len = 32768
+dtype = "bfloat16"
+reasoning_parser = "qwen3"
+enforce_eager = true
+
+# Qwen3.5 is a multimodal arch — need language_model_only for text-only vLLM
+# Override chat template: default Qwen3.5 strips <think> from intermediate turns
+[inference.vllm_extra]
+language_model_only = true
+chat_template = "configs/arc_agi/qwen3.5-rl.jinja"
+
+# --- Teacher Inference (Qwen3.5-27B on 1 GPU) ---
+[teacher_inference]
+gpu_memory_utilization = 0.90
+
+[teacher_inference.server]
+port = 8032
+
+[teacher_inference.model]
+name = "Qwen/Qwen3.5-27B"
+max_model_len = 32768
+dtype = "bfloat16"
+reasoning_parser = "qwen3"
+
+[teacher_inference.vllm_extra]
+language_model_only = true
+chat_template = "configs/arc_agi/qwen3.5-rl.jinja"

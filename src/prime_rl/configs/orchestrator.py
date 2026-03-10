@@ -58,6 +58,13 @@ class LoRAConfig(BaseConfig):
 class ModelConfig(BaseModelConfig):
     """Extended model configuration with per-run LoRA settings."""
 
+    chat_template: Annotated[
+        str | None,
+        Field(
+            description="Override the tokenizer's chat template. Can be a Jinja2 template string or a path to a .jinja file.",
+        ),
+    ] = None
+
     lora: Annotated[
         LoRAConfig | None,
         Field(
