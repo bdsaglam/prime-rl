@@ -151,10 +151,11 @@ def build_teacher_prompt_ids(
     tokenizer,
     chat_template_kwargs: dict | None = None,
 ) -> list[int]:
-    """Build teacher prompt tokens with privileged info injected into the system message.
+    """Build teacher prompt tokens with privileged info appended to the last user message.
 
-    Takes the original chat messages from the rollout's first trajectory step,
-    appends teacher_context to the system message, and tokenizes.
+    Following SDPO's approach, PI is placed in the user message immediately before
+    the assistant generation marker, keeping it close to the response tokens the
+    teacher will score.
 
     Args:
         messages: Original OpenAI-format chat messages from the rollout.
@@ -167,18 +168,15 @@ def build_teacher_prompt_ids(
     """
     modified = copy.deepcopy(messages)
 
-    # Find and modify system message
-    for msg in modified:
-        if msg["role"] == "system":
+    # Find the last user message and append PI to it
+    for msg in reversed(modified):
+        if msg["role"] == "user":
             if isinstance(msg["content"], str):
-                msg["content"] += f"\n\n--- PRIVILEGED INFORMATION ---\n{teacher_context}"
+                msg["content"] += (
+                    f"\n\n{teacher_context}\n\n"
+                    "Correctly solve the original question."
+                )
             break
-    else:
-        # No system message found — prepend one
-        modified.insert(0, {
-            "role": "system",
-            "content": f"--- PRIVILEGED INFORMATION ---\n{teacher_context}",
-        })
 
     return tokenizer.apply_chat_template(
         modified, tokenize=True, add_generation_prompt=True, return_dict=False, **(chat_template_kwargs or {})
