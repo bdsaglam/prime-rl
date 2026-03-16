@@ -10,12 +10,6 @@ import asyncio
 import json
 import logging
 
-import logfire
-
-# Configure logfire
-logfire.configure(console=False, inspect_arguments=False)
-logfire.instrument_litellm()
-
 import litellm
 
 from prime_rl.configs.orchestrator import AnalyzerConfig
@@ -24,35 +18,119 @@ litellm.drop_params = True
 
 logger = logging.getLogger(__name__)
 
-# When dataset includes a reference solution, focus on pitfalls only.
-SYSTEM_PROMPT_WITH_SOLUTION = """You are given a math competition problem, its correct answer, a reference solution, and an attempt at solving it.
+# --- Analysis prompt styles ---
+# Each style has informed (with solution) and blind (without solution) variants.
+# Selection based on analyzer_config.analysis_style.
 
-Generate concise problem notes highlighting:
-- Key pitfalls to avoid (informed by errors in the attempt, but phrased as general advice)
-- Critical intermediate steps that are easy to get wrong
-- Alternative approaches if the attempt's strategy is suboptimal
+ANALYSIS_PROMPTS: dict[str, dict[str, str]] = {
+    # Structured: short, constrained error report. Best discrimination (d=1.74 informed).
+    "structured": {
+        "informed": (
+            "You are a math grading system. Analyze the student's attempt against the "
+            "reference information and produce a SHORT, STRUCTURED error report.\n\n"
+            "Format your response EXACTLY as:\n"
+            "VERDICT: [correct/incorrect/partially_correct]\n"
+            "ERROR_TYPE: [computational/conceptual/approach/notation/none]\n"
+            "ERROR_LOCATION: [which step or reasoning segment contains the first error]\n"
+            "WHAT_WENT_WRONG: [one sentence describing the error]\n"
+            "SHOULD_HAVE: [one sentence describing what the correct step would be]\n\n"
+            "Be precise and concise. No extra commentary."
+        ),
+        "blind": (
+            "You are a math grading system. Analyze the student's attempt and "
+            "produce a SHORT, STRUCTURED error report.\n\n"
+            "Format your response EXACTLY as:\n"
+            "VERDICT: [correct/incorrect/partially_correct]\n"
+            "ERROR_TYPE: [computational/conceptual/approach/notation/none]\n"
+            "ERROR_LOCATION: [which step or reasoning segment contains the first error]\n"
+            "WHAT_WENT_WRONG: [one sentence describing the error]\n"
+            "SHOULD_HAVE: [one sentence describing what the correct step would be]\n\n"
+            "Be precise and concise. No extra commentary."
+        ),
+    },
+    # Directive: guidance framed for the teacher. Best balance of signal and discrimination.
+    "directive": {
+        "informed": (
+            "You will help a math teacher score a student's work. "
+            "The teacher will read your guidance BEFORE scoring each token of the student's response.\n\n"
+            "Write brief, actionable guidance for the teacher:\n"
+            "- Where in the response does the reasoning go wrong?\n"
+            "- What should the student have written instead?\n"
+            "- Which parts are correct and should be reinforced?\n\n"
+            "Keep it under 200 words. Be specific about locations in the response."
+        ),
+        "blind": (
+            "You will help a math teacher score a student's work. "
+            "The teacher will read your guidance BEFORE scoring each token of the student's response.\n\n"
+            "Write brief, actionable guidance for the teacher:\n"
+            "- Where in the response does the reasoning go wrong?\n"
+            "- What should the student have written instead?\n"
+            "- Which parts are correct and should be reinforced?\n\n"
+            "Keep it under 200 words. Be specific about locations in the response."
+        ),
+    },
+    # Verbose: multi-paragraph analysis. Highest |KL| but worst discrimination — NOT recommended.
+    "verbose": {
+        "informed": (
+            "You are given a math competition problem, its correct answer, a reference solution, "
+            "and an attempt at solving it.\n\n"
+            "Generate concise problem notes highlighting:\n"
+            "- Key pitfalls to avoid (informed by errors in the attempt, but phrased as general advice)\n"
+            "- Critical intermediate steps that are easy to get wrong\n"
+            "- Alternative approaches if the attempt's strategy is suboptimal\n\n"
+            "Do NOT restate the answer or reproduce the reference solution. "
+            "Focus only on insights that go beyond what the reference solution already provides.\n\n"
+            "Write as concise problem notes — no preamble, no meta-commentary. "
+            "Just the mathematical insights. Keep it to 2-4 sentences."
+        ),
+        "blind": (
+            "You are given a math competition problem, its correct answer, and an attempt at solving it.\n\n"
+            "Generate a short set of hints and notes about this problem that would help someone solve it correctly. "
+            "Do NOT include the answer — just the insights needed to get there.\n\n"
+            "Your hints should include:\n"
+            "- A sketch of the correct solution approach\n"
+            "- Key intermediate results or mathematical facts relevant to the problem\n"
+            "- Specific pitfalls to avoid (informed by errors you see in the attempt, "
+            "but phrased as general advice about the problem)\n"
+            "- Alternative approaches if the attempt's strategy is suboptimal\n\n"
+            "Write as concise problem notes — no preamble, no meta-commentary. "
+            "Just the mathematical insights."
+        ),
+    },
+    # Error point: minimal — just the single critical error.
+    "error_point": {
+        "informed": (
+            "You are analyzing a math student's work. Your ONLY job is to identify "
+            "the single most critical error.\n\n"
+            "Respond with:\n"
+            "1. The exact step where the error occurs (quote the student's text)\n"
+            "2. Why it's wrong (one sentence)\n"
+            "3. What the correct reasoning would be (one sentence)\n\n"
+            "If the solution appears correct, say 'No critical error found.' Nothing else."
+        ),
+        "blind": (
+            "You are analyzing a math student's work. Your ONLY job is to identify "
+            "the single most critical error.\n\n"
+            "Respond with:\n"
+            "1. The exact step where the error occurs (quote the student's text)\n"
+            "2. Why it's wrong (one sentence)\n"
+            "3. What the correct reasoning would be (one sentence)\n\n"
+            "If the solution appears correct, say 'No critical error found.' Nothing else."
+        ),
+    },
+}
 
-Do NOT restate the answer or reproduce the reference solution. Focus only on insights that go beyond what the reference solution already provides.
-
-Write as concise problem notes — no preamble, no meta-commentary. Just the mathematical insights. Keep it to 2-4 sentences."""
-
-# When no reference solution is available, include a solution sketch.
-SYSTEM_PROMPT_WITHOUT_SOLUTION = """You are given a math competition problem, its correct answer, and an attempt at solving it.
-
-Generate a short set of hints and notes about this problem that would help someone solve it correctly. Do NOT include the answer — just the insights needed to get there.
-
-Your hints should include:
-- A sketch of the correct solution approach
-- Key intermediate results or mathematical facts relevant to the problem
-- Specific pitfalls to avoid (informed by errors you see in the attempt, but phrased as general advice about the problem)
-- Alternative approaches if the attempt's strategy is suboptimal
-
-Write as concise problem notes — no preamble, no meta-commentary. Just the mathematical insights."""
+# Legacy aliases for backward compatibility
+SYSTEM_PROMPT_WITH_SOLUTION = ANALYSIS_PROMPTS["verbose"]["informed"]
+SYSTEM_PROMPT_WITHOUT_SOLUTION = ANALYSIS_PROMPTS["verbose"]["blind"]
 
 
 def _extract_problem(rollout: dict) -> str:
     """Extract the problem text from a rollout's prompt messages."""
-    for msg in rollout["trajectory"][0]["prompt"]:
+    trajectory = rollout.get("trajectory", [])
+    if not trajectory:
+        return ""
+    for msg in trajectory[0].get("prompt", []):
         if msg["role"] == "user":
             content = msg["content"]
             if isinstance(content, str):
@@ -123,6 +201,8 @@ async def prepare_teacher_context(
     for i, rollout in enumerate(rollouts):
         if rollout.get("reward", 0) == 1.0:
             continue
+        if not rollout.get("trajectory"):
+            continue
 
         info = _get_info(rollout)
         problem = _extract_problem(rollout)
@@ -164,10 +244,14 @@ async def prepare_teacher_context(
         if not has_sol
     ]
 
+    # Select prompts based on analysis_style (default: structured)
+    style = getattr(analyzer_config, "analysis_style", "structured")
+    style_prompts = ANALYSIS_PROMPTS.get(style, ANALYSIS_PROMPTS["structured"])
+
     analyses: dict[int, str] = {}
 
     if with_solution:
-        prompt = analyzer_config.system_prompt or SYSTEM_PROMPT_WITH_SOLUTION
+        prompt = analyzer_config.system_prompt or style_prompts["informed"]
         results = await _call_llm(
             analyzer_config, prompt, [msg for _, msg in with_solution]
         )
@@ -175,7 +259,7 @@ async def prepare_teacher_context(
             analyses[idx] = analysis
 
     if without_solution:
-        prompt = analyzer_config.system_prompt or SYSTEM_PROMPT_WITHOUT_SOLUTION
+        prompt = analyzer_config.system_prompt or style_prompts["blind"]
         results = await _call_llm(
             analyzer_config, prompt, [msg for _, msg in without_solution]
         )

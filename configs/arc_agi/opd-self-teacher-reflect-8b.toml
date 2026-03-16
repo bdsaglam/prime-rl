@@ -1,0 +1,115 @@
+# ARC-AGI Reflect: Self-Teacher OPD with structured reflection
+# 8B student + 8B self-teacher, reflection after SUBMIT
+# Multi-turn REPL (8 turns max including reflection)
+# 4x A100 80GB: 1 train + 2 infer + 1 teacher
+
+max_steps = 50
+seq_len = 16384
+output_dir = "outputs/arc-agi-reflect-self-teacher-8b"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "arc-agi-opd"
+name = "reflect-self-teacher-8b"
+
+[ckpt]
+interval = 10
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 1.0
+adv_tau = 0.0          # Pure OPD
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 8
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 15384
+
+[orchestrator.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+# ARC-AGI Reflect environment: 8 turns max (7 REPL + 1 reflection)
+[[orchestrator.env]]
+id = "arc_agi_reflect"
+name = "arc-agi-reflect"
+args = { dataset_name = "arc-prize-2025", split = "training[:100]", max_turns = 8, reflection_style = "structured" }
+
+[orchestrator.eval]
+interval = 10
+rollouts_per_example = 4
+
+[[orchestrator.eval.env]]
+id = "arc_agi_reflect"
+name = "arc-agi-reflect-eval"
+args = { dataset_name = "arc-prize-2025", split = "evaluation[:50]", max_turns = 8, reflection_style = "structured" }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 15384
+
+[orchestrator.eval.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- Self-Teacher (8B, static PI — no deliberative for now) ---
+[orchestrator.teacher_model]
+deliberative = false
+max_model_len = 16384
+use_tito = false
+
+[orchestrator.teacher_model.chat_template_kwargs]
+enable_thinking = false
+
+# --- Student Inference (8B, 2 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 16384
+dtype = "bfloat16"
+
+# --- Teacher Inference (8B self-teacher, 1 GPU) ---
+[teacher_inference]
+gpu_memory_utilization = 0.9
+
+[teacher_inference.server]
+port = 8001
+
+[teacher_inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 16384
+dtype = "bfloat16"

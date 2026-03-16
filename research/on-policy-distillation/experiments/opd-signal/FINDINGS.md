@@ -386,7 +386,8 @@ From cheapest to most expensive:
 | **3. Multi-lens (fixed)** | K forward passes with K fixed PI types | |KL| = 0.062 oracle (ref-free), 0.088 (mixed) |
 | **4. Deliberative** | Teacher generates reasoning trace, then 1 forward pass | **CONFIRMED: blind 0.087 (asst_prefix), beats answer_ref (0.065)** |
 | **5. Deliberative + best-of-N** | Generate N analyses, pick best | best-of-4 blind: 0.082 (8B self), 0.085 (32B self) |
-| **6. Adaptive multi-lens** | Teacher generates K custom lenses per rollout, then K forward passes | Untested — predicted upper bound |
+| **6. Reflection-in-sequence** | Student reflects (structured), teacher scores full seq | **d=4.67 on reflection tokens (7.5x solution), additive signal** |
+| **7. Adaptive multi-lens** | Teacher generates K custom lenses per rollout, then K forward passes | Untested — predicted upper bound |
 
 Each level trades more compute for better credit assignment. The question is whether the marginal signal quality justifies the cost — the same question that CoT answered affirmatively for inference.
 
@@ -508,15 +509,211 @@ The training pipeline should inject deliberative analysis as an **assistant resp
 
 The teacher logprobs are extracted only for the student rollout tokens (after the analysis prefix), ensuring the training signal aligns with the student's actual token sequence.
 
+## Reflection-in-Sequence: Student Self-Diagnosis as Trainable Signal
+
+### Motivation
+
+All previous experiments treat the student's rollout as fixed — the teacher scores it with varying PI. But what if the student generates additional tokens that are themselves rich in learning signal?
+
+**Reflection-Augmented OPD (RA-OPD)**: After solving, the student reflects on its own work in a structured format. The teacher scores the full sequence (solution + reflection). The reflection tokens become a new source of per-token learning signal.
+
+This is analogous to how humans learn: attempt → reflect → get feedback → improve. The key insight is that the student's self-diagnosis — even when wrong — creates tokens that are highly informative for a teacher with PI.
+
+### Setup
+
+Multi-turn sequence: `[problem] → [solution] → [reflection prompt] → [reflection]`. Teacher scores all tokens via prefill with PI.
+
+**Independent variables:**
+- **Student PI in reflection prompt**: none (blind), binary ("you're incorrect"), answer, answer+hint
+- **Reflection format**: open (freeform) vs structured (VERDICT/CONFIDENCE/ERROR_TYPE/ERROR_LOCATION/WHAT_WENT_WRONG/CORRECTION)
+- **Teacher PI**: no_pi, answer_only, answer_ref
+- **Model configurations**: 8B×8B, 8B×32B, 32B×8B, 32B×32B (reflector × teacher)
+
+**Data**: Same 100 rollouts (86 incorrect, 14 correct), 25 AIME 2025 problems.
+
+### Main Result: Reflection Tokens Carry Dramatically Stronger Signal
+
+| Config | d (solution) | d (reflection) | Ratio |
+|---|---|---|---|
+| 8B self-teacher | 0.54 | 0.85 | 1.6x |
+| 32B teacher, 8B reflector | 0.63 | 2.56 | 4.1x |
+| **32B self-teacher** | **0.62** | **4.67** | **7.5x** |
+
+**d = 4.67 on reflection tokens** (32B self-teacher, answer_hint + structured format) — the strongest discrimination signal ever measured in our experiments, 7.5x stronger than solution tokens.
+
+### Structured Format is Essential
+
+Open-ended reflection produces **negative** Cohen's d in most conditions:
+
+| Teacher PI | Student PI | Open d | Structured d |
+|---|---|---|---|
+| answer_only | binary | -0.69 to -1.26 | 0.56 to 2.89 |
+| answer_ref | answer | -0.12 to -1.51 | 0.60 to 2.90 |
+
+**Why negative d on open reflection?** Incorrect rollouts trigger substantive freeform text ("I made an error at step X"), which aligns well with what the informed teacher expects. Correct rollouts trigger bland "I'm confident" responses. The teacher with PI sees *less* divergence from incorrect reflections, inverting the signal. Structured format avoids this by constraining both correct and incorrect reflections to the same fields.
+
+### Student PI Scales Signal Monotonically (32B self-teacher, structured)
+
+| Student PI | d (reflection) |
+|---|---|
+| none (blind) | 1.44 |
+| binary ("you're incorrect") | 2.89 |
+| answer (told correct answer) | 3.99 |
+| answer + hint | **4.67** |
+
+Even blind reflection (d=1.44) exceeds answer-only PI on solution tokens (d=0.63). The student's uncertainty about its own work IS informative — the teacher (with PI) evaluates this uncertainty, creating learning signal.
+
+### Model Scaling
+
+- **Reflector**: 8B → 32B gives ~2x d increase (a more capable reflector produces more informative self-diagnoses)
+- **Teacher**: 8B → 32B gives ~3x d increase
+- **Best-of-4 selection**: +27.3% |KL| over random (validates inference-time scaling for reflection)
+- Higher temperature helps: T=0.9 gives |KL|=0.0368 vs T=0.3 gives |KL|=0.0299
+
+### Reflection + Deliberative Analysis Stack
+
+Using structured analysis as teacher PI gives strong signal on BOTH segments:
+
+| Teacher PI | d (solution) | d (reflection) |
+|---|---|---|
+| answer_only | 0.62 | 0.72 |
+| answer_ref | 0.44 | 2.41 |
+| structured_analysis | **1.58** | **1.90** |
+
+The reflection is purely **additive** — solution token signal is unaffected by the reflection turn.
+
+### Blind Verdict Accuracy (Student Self-Assessment)
+
+| Condition | IC Detection | C Detection |
+|---|---|---|
+| 32B blind (no PI) | 43% | 100% |
+| 32B answer (told answer) | 100% | 100% |
+| 8B blind (no PI) | 67% | 100% |
+
+The blind student only detects its own errors 43-67% of the time. This asymmetry between student knowledge and teacher knowledge is precisely what drives the strong learning signal on reflection tokens.
+
+### Info Asymmetry: Reflection as Memory (Self-Teaching)
+
+In self-OPD, student = teacher (same weights). The student's own reflection becomes "memory" — the model re-reads its structured self-diagnosis while knowing the ground truth. We tested all meaningful asymmetry combinations with binary as the realistic minimum student PI (correctness is free from the reward signal).
+
+| Condition | Student PI | Teacher PI | d(sol) | d(refl) |
+|---|---|---|---|---|
+| H: binary → none | binary | none | 0.26 | 0.37 |
+| I: binary → binary | binary | binary (matched) | 0.95 | 4.47 |
+| J: binary → answer | binary | answer | 0.63 | 2.89 |
+| **K: binary → reflection** | binary | **student's own reflection** | **1.48** | **5.25** |
+| **L: binary → answer+refl** | binary | **answer + student's reflection** | **1.48** | **5.30** |
+| M: binary → answer+ref | binary | answer + ref solution | 0.43 | 3.13 |
+| D2: none → reflection | none | student's reflection | 0.76 | 1.19 |
+
+**L (binary → answer+reflection) is the best overall configuration: d=5.30 on reflection, d=1.48 on solution.** Both segments get strong signal simultaneously.
+
+Key observations:
+
+1. **Reflection as PI beats answer as PI on solution tokens**: K gives d=1.48 on solution vs J's d=0.63 with answer. The student's structured self-diagnosis provides richer teaching context than the bare answer — it's a compressed map of the student's reasoning that the teacher can evaluate.
+
+2. **Adding answer to reflection is redundant**: K→L is 5.25→5.30 on reflection, identical 1.48 on solution. The reflection already captures the relevant information. However, the answer is free so we include it.
+
+3. **Binary feedback before reflection is critical**: D2 (blind→reflection) gives d=1.19 on reflection. K (binary→reflection) gives d=5.25. Binary feedback helps the student produce more accurate reflections, which then become more useful as PI.
+
+4. **Reference solution hurts discrimination**: M (answer+ref, d=3.13) has lower d than K (reflection, d=5.25). The reference solution is generic; the student's own reflection is specific to the rollout.
+
+5. **Even matched PI creates signal (I)**: d=4.47 on reflection when teacher PI = student PI (both binary). This is because the reflection *content* differs between correct and incorrect rollouts — the teacher evaluates different structured claims even with the same factual PI.
+
+### Signal Concentration (Token-Level Quality)
+
+A concern with high |KL| is that it could reflect uniform logprob shift ("peanut butter") rather than concentrated signal on critical tokens. We measured concentration via Gini coefficient (0 = uniform, 1 = all signal on one token) and Top-10% fraction.
+
+| Segment | Gini | Top-10% of tokens carry | CV |
+|---|---|---|---|
+| Solution tokens (IC) | 0.888 | 80.3% of signal | 6.89 |
+| Reflection tokens, answer PI (IC) | 0.766 | 55.8% of signal | 1.98 |
+| Reflection tokens, blind (IC) | 0.872 | 78.8% of signal | 3.76 |
+
+Both segments show highly concentrated signal — the uniform-shift failure mode is ruled out. The teacher is selectively disagreeing with specific tokens, not shifting everything uniformly.
+
+### Unified Comparison: All PI Methods
+
+| Method | Cohen's d (sol) | Cohen's d (refl) |
+|---|---|---|
+| No PI | 0.10 | — |
+| Answer only | 0.84 | — |
+| Sibling rollout (SDPO-style) | 1.02 | — |
+| Structured analysis as PI (32B) | 2.23 | — |
+| RA-OPD blind (32B self, none→answer) | 0.63 | 1.45 |
+| RA-OPD answer (32B self, answer→answer) | 0.66 | 3.98 |
+| RA-OPD answer+hint (32B self) | 0.62 | 4.67 |
+| **RA-OPD binary→answer+refl (32B self)** | **1.48** | **5.30** |
+
+### Implications
+
+1. **Reflection tokens are a free lunch**: Adding one turn provides additional trainable tokens with 2-7x stronger signal, without degrading solution signal.
+2. **Learning to reflect**: Since reflection tokens get strong OPD signal, the model receives direct gradient pressure on HOW it reflects. Over training, reflections should become more accurate — and since better reflections create better PI (K/L results), this creates a virtuous cycle.
+3. **Reflection as self-teaching memory**: In self-OPD, the student's own reflection becomes PI for the teacher (same model). This is the model teaching itself using compressed experience from its previous attempt — a form of learned memory.
+4. **Bitter lesson alignment**: Signal scales with compute (bigger models, more reflections, best-of-N selection, more student PI). No hand-crafted features — just a structured format.
+5. **Structured format is a scaffold, not a ceiling**: The fixed VERDICT/ERROR_TYPE/... format works well but is hand-designed. Ideally the model learns how to reflect and adapts its format to the task. The OPD gradient on reflection tokens provides exactly this pressure.
+6. **Training validation needed**: All measurements are signal proxies. The critical question remains: does d=5.30 translate to faster or better training?
+
+### Generalization: AIME 2024
+
+Tested on a different dataset (30 AIME 2024 problems, 120 8B rollouts: 89 IC, 31 C):
+
+| Condition | AIME 2025 d(refl) | AIME 2024 d(refl) | 95% CI |
+|---|---|---|---|
+| Blind structured | 1.44 | **1.62** | [1.43, 1.88] |
+| Answer structured | 3.99 | **3.65** | [3.08, 4.60] |
+
+Both findings replicate — not dataset-specific.
+
+### Correct-Rollout Reflection Design
+
+Alternative prompts that extract learning from correct rollouts:
+
+| Prompt | |KL| C (refl) | Cohen's d |
+|---|---|---|
+| Diagnostic (original, "none") | 0.0009 | 4.04 |
+| Efficiency analysis | 0.0128 | 1.84 |
+| Teaching (prerequisites, pitfalls) | 0.0236 | 0.83 |
+
+Tradeoff: richer correct-rollout content generates 26x more |KL| but reduces discrimination. Efficiency analysis provides best balance (14x more signal, d=1.84).
+
+### Cross-Domain Generalization: ARC-AGI
+
+Tested on ARC-AGI (Abstract Reasoning Corpus) — a fundamentally different domain: visual pattern recognition, grid transformations, multi-turn REPL. 198 rollouts (11 correct, 187 incorrect) from 50 ARC-prize-2025 tasks with Qwen3-32B self-teacher.
+
+| Condition | Segment | Cohen's d | |KL| IC | |KL| C | Gini |
+|---|---|---|---|---|---|
+| Full PI (expected grids) | Solution | -0.09 | 0.0929 | 0.0971 | 0.870 |
+| Full PI (expected grids) | **Reflection** | **2.29** | **0.1142** | **0.0435** | **0.766** |
+| No PI (control) | Solution | 0.11 | 0.0000 | 0.0000 | 0.010 |
+| No PI (control) | Reflection | 0.27 | 0.0007 | 0.0000 | 0.028 |
+
+**The core finding replicates across domains**: reflection tokens carry strong discrimination (d=2.29), solution tokens carry none (d≈0). The no-PI control confirms signal is entirely PI-driven (|KL|≈0 when student=teacher with no PI).
+
+ARC-AGI d=2.29 vs AIME d=3.99 — lower but still strong. Expected because: (1) only 11 correct rollouts (5.6% accuracy), (2) grid-based PI is less semantically rich than math answers, (3) single-turn ARC solving is harder than multi-turn REPL.
+
+**Setup**: Single-turn (no REPL), student solves then reflects in structured format (VERDICT/ERROR_TYPE/ERROR_LOCATION/WHAT_WENT_WRONG/LESSON). Student sees correctness + expected output after submission. Teacher PI = expected output grids. New `arc_agi_reflect` environment created for training.
+
+### Limitations
+
+- **Domain**: Tested on AIME (math) and ARC-AGI (visual reasoning). Core pattern (reflection >> solution signal) replicates, but the specific magnitudes vary. On tasks where the model is near-clueless, structured reflection may degrade to noise.
+- **Model family**: All results are Qwen3. Generalization to other architectures not tested.
+- **Signal ≠ training**: |KL| and Cohen's d are proxies. Whether stronger signal translates to faster or better training remains to be validated.
+- **Structured format is hand-designed**: The VERDICT/ERROR_TYPE/... format was manually chosen. The optimal reflection structure likely depends on the task domain and may need to be learned.
+
+### Detailed results
+
+See `reflection-in-seq-results.md` for full tables across all 4 model configurations, info asymmetry patterns, and additional analyses.
+
 ## Open Questions
 
 1. ~~**Deliberative teaching**: Does teacher reasoning improve credit assignment?~~ **YES — blind deliberative (0.072) beats answer_ref (0.065).**
 2. ~~**Self-supervised loop**: Can the pipeline work without ground truth?~~ **YES — blind deliberative needs no external knowledge and exceeds oracle PI.**
-3. **Downstream validation**: Does deliberative signal translate to actual training improvement? The |KL| is higher but Cohen's d is lower — does the student learn better? **This is the most important open question** — especially given the near-zero Cohen's d for 32B self-OPD.
-4. **Scaling law**: Is there a smooth relationship between teacher analysis budget (tokens) and signal quality? We tested ~1024 tokens — what about 256, 512, 2048, 4096?
-5. **Multi-lens + deliberative**: Can we combine deliberative analysis with multi-lens (generate K different analyses per rollout, use per-token max)? Predicted to further improve.
-6. ~~**Cohen's d gap**: Is placement the main factor?~~ **PARTIALLY RESOLVED — assistant_prefix placement improves Cohen's d from 0.34 to 0.49 for blind_deliberative.** Remaining gap vs answer_only (d=0.72) needs training validation to determine if it matters.
-7. **Teacher training**: Can we train the teacher to generate better analyses? (Distillation from oracle, proxy reward RL, self-refinement — see IDEATION.md)
-8. **Multi-turn / other domains**: Does this apply to ARC-AGI / code generation?
+3. **Downstream validation**: Does the signal translate to actual training improvement? **Most important open question.**
+4. **Scaling law**: Is there a smooth relationship between teacher analysis budget (tokens) and signal quality?
+5. ~~**Can the student's own tokens provide signal?**~~ **YES — RA-OPD: d=5.30 on reflection, d=1.48 on solution.**
+6. ~~**Does reflection work as PI?**~~ **YES — student's own reflection as teacher PI gives d=1.48 on solution (better than answer-only d=0.63).**
+7. ~~**Domain generalization**: Does this extend beyond math competition?~~ **PARTIALLY — ARC-AGI (visual reasoning) replicates: d=2.29 on reflection (d≈0 on solution).** Code, open-ended reasoning, multimodal still untested.
+8. **Learnable reflection format**: Can the model discover optimal reflection structure through training rather than using a fixed template?
 9. **Model families**: All results are Qwen3. Generalization?
 

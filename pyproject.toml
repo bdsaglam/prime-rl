@@ -36,6 +36,7 @@ dependencies = [
     "reverse-text",
     "tilelang>=0.1.8",
     "arc-agi",
+    "aime-mt",
 ]
 
 [project.scripts]
@@ -93,6 +94,7 @@ transformers = { git = "https://github.com/huggingface/transformers.git", rev = 
 flash-attn-cute = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "main" }
 reverse-text = { index = "primeintellect" }
 arc-agi = { path = "environments/arc_agi", editable = true }
+aime-mt = { path = "environments/aime_mt", editable = true }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

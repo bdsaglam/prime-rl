@@ -707,14 +707,14 @@ class AnalyzerConfig(BaseConfig):
     available reference info (answer, solution) and produces rich analysis text that
     becomes the teacher's privileged context for logprob computation.
 
-    Uses litellm for model-agnostic API routing (e.g. gemini/gemini-3-flash, openai/gpt-4o,
+    Uses litellm for model-agnostic API routing (e.g. vertex_ai/gemini-2.5-pro, openai/gpt-4o,
     anthropic/claude-sonnet-4-20250514, or any vLLM endpoint via openai/ prefix).
     """
 
     model: Annotated[
         str,
-        Field(description="litellm model string (e.g. 'gemini/gemini-3-flash', 'openai/gpt-4o')."),
-    ] = "gemini/gemini-3-flash-preview"
+        Field(description="litellm model string (e.g. 'vertex_ai/gemini-2.5-pro', 'openai/gpt-4o')."),
+    ] = "vertex_ai/gemini-2.5-pro"
 
     max_tokens: Annotated[
         int,
@@ -728,8 +728,18 @@ class AnalyzerConfig(BaseConfig):
 
     system_prompt: Annotated[
         str | None,
-        Field(description="Custom system prompt for analysis. If None, uses the default prompt."),
+        Field(description="Custom system prompt for analysis. If None, uses the default for the chosen analysis_style."),
     ] = None
+
+    analysis_style: Annotated[
+        Literal["structured", "directive", "verbose", "error_point"],
+        Field(description=(
+            "Analysis prompt style. 'structured' (default): short VERDICT/ERROR_TYPE/ERROR_LOCATION format, "
+            "best discrimination (d=1.74 informed, d=0.55 blind). 'directive': guidance for the teacher, "
+            "best balance of signal and discrimination. 'verbose': multi-paragraph analysis, highest |KL| "
+            "but worst discrimination. 'error_point': minimal single-error identification."
+        )),
+    ] = "structured"
 
     max_concurrent: Annotated[
         int,
@@ -756,16 +766,6 @@ class OrchestratorConfig(BaseSettings):
             description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
             "If provided, teacher logprobs will be computed using the specified model. "
             "If None, no teacher model will be used."
-        ),
-    ] = None
-
-    # The analyzer configuration (optional, generates privileged info for teacher)
-    analyzer: Annotated[
-        AnalyzerConfig | None,
-        Field(
-            description="Analyzer model for generating privileged information from student rollouts. "
-            "The analyzer reads the student's work plus reference info and produces analysis text "
-            "that becomes the teacher's privileged context. Uses litellm for API routing."
         ),
     ] = None
 

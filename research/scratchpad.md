@@ -354,3 +354,66 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 vllm serve Qwen/Qwen3.5-9B \
     --enable-prefix-caching 
 
 prime eval run arc-agi -a '{"dataset_name":"arc-prize-2024"}' -n 4 -r 3 -m Qwen/Qwen3.5-9B -b http://0.0.0.0:8907/v1
+
+# Qwen3.5-35B-A3B
+
+docker run --runtime nvidia --gpus 1,2 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    -p 8935:8935 \
+    --ipc=host \
+    vllm/vllm-openai \
+    --port 8935 \
+    --model Qwen/Qwen3.5-35B-A3B \
+    --tensor-parallel-size 2 \
+    --gpu-memory-utilization 0.90 \
+    --dtype bfloat16 \
+    --max-model-len 65536 \
+    --enable-prefix-caching \
+    --enable-expert-parallel \
+    --mm-encoder-tp-mode data \
+    --mm-processor-cache-type shm \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice --tool-call-parser qwen3_coder
+
+
+docker run --runtime nvidia --gpus 1,2 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    -p 8935:8935 \
+    --ipc=host \
+    vllm/vllm-openai \
+    --port 8935 \
+    --model Qwen/Qwen3.5-35B-A3B \
+    --tensor-parallel-size 2 \
+    --max-model-len 65536 \
+    --reasoning-parser qwen3 \
+    --enable-prefix-caching
+
+
+# Qwen3.5-27B
+
+
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3.5-27B \
+    --port 8927 \
+    --gpu-memory-utilization 0.9 \
+    --dtype bfloat16 \
+    --max-model-len 65536 \
+    --reasoning-parser qwen3 \
+    --enforce-eager \
+    --enable-prefix-caching
+
+docker run --runtime nvidia --gpus 0 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    -p 8927:8927 \
+    --ipc=host \
+    vllm/vllm-openai:qwen3_5 \
+    --port 8927 \
+    --model Qwen/Qwen3.5-27B \
+    --async-scheduling \
+    --gpu-memory-utilization 0.85 \
+    --dtype bfloat16 \
+    --max-model-len 65536 \
+    --enable-prefix-caching \
+    --reasoning-parser qwen3 

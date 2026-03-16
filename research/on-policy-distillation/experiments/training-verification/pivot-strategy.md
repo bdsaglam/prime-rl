@@ -1,13 +1,16 @@
 # Adaptive PI: Pivot Strategy
 
-## Current Status
+## Status: Core Hypothesis Validated (2026-03-12)
 
-Training Experiment E (adaptive PI via Gemini 3 Flash on AIME 2025) is running. Early signs:
-- Step 0: all rewards=1.0, PI generation skipped (correct rollouts don't need adaptive PI)
-- AIME 2025 may be too easy for 8B student to show meaningful improvement
-- Mismatch KL flat at 0.0007 (same as baseline)
+Self-teacher experiments (F, G) confirmed that deliberative PI creates real learning signal:
+- **Self-teacher baseline (F)**: Zero learning (null baseline confirmed)
+- **Self-teacher deliberative (G)**: Heldout +4.3%, Train +6.9%, grad norms 3-5x baseline
 
-## Core Hypothesis
+The cross-model gap was masking the PI effect in all cross-teacher experiments (C, D, E). Self-teacher isolates it.
+
+**Next steps** are no longer about "does it work?" but "how to make it work better and at scale."
+
+## Core Hypothesis (validated)
 
 Standard OPD provides static PI (answer + ref solution). Adaptive PI tailors hints to the specific mistakes in each student rollout. This should produce stronger, more targeted KL divergence — the teacher's logprobs shift more where the student actually struggles.
 

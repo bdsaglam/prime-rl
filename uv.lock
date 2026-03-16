@@ -23,6 +23,21 @@ wheels = [
 ]
 
 [[package]]
+name = "aime-mt"
+version = "0.1.0"
+source = { editable = "environments/aime_mt" }
+dependencies = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers", specifier = ">=0.1.9" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2330,6 +2345,7 @@ name = "prime-rl"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aime-mt" },
     { name = "aiolimiter" },
     { name = "arc-agi" },
     { name = "beartype" },
@@ -2388,6 +2404,7 @@ fp8-inference = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aime-mt", editable = "environments/aime_mt" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "arc-agi", editable = "environments/arc_agi" },
     { name = "beartype", specifier = ">=0.21.0" },

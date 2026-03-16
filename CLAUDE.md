@@ -6,9 +6,13 @@ Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl)
 
 **Adaptive PI for OPD**: Standard OPD gives the teacher a static advantage (answer + reference solution). We explore *deliberative teaching* — the teacher generates an analysis of the student's specific mistakes before scoring, creating stronger, more targeted per-token feedback.
 
-**Key signal measurement result**: Blind deliberative PI beats answer_ref by ~19% in |KL| across all configs. Best-of-4 reaches +31-33%. This is fully self-supervised (no external knowledge needed). Details: `research/on-policy-distillation/experiments/opd-signal/FINDINGS.md`
+**Key signal measurement results**: Analysis prompt style matters dramatically — structured format (short VERDICT/ERROR_TYPE/ERROR_LOCATION) achieves d=1.74 (informed) vs d=0.25 for verbose. |KL| and discrimination are inversely correlated: shorter analysis = more precise signal. Sibling rollout (SDPO-style) remains strongest single PI at d=1.02. Details: `research/on-policy-distillation/research-notes/sdpo-placement-pi-content-results.md`
 
-**Current challenge**: Signal doesn't yet translate to training gains. Gap analysis: `research/on-policy-distillation/experiments/training-verification/gap-analysis.md`. Pivot strategy: `research/on-policy-distillation/experiments/training-verification/pivot-strategy.md`.
+**Analysis style**: `AnalyzerConfig.analysis_style` controls prompt format. Default is `"structured"` (best discrimination). Options: structured, directive, verbose, error_point. AIME env (`environments/aime/src/aime/teacher_context.py`) selects informed/blind variant based on whether reference solution is available.
+
+**Training validation (2026-03-12)**: Deliberative PI confirmed working in self-teacher (8B→8B) setting. Heldout +4.3%, train +6.9%, grad norms 3-5x baseline — while answer-only self-teacher shows zero learning. Cross-model gap masks PI in cross-teacher setups. Details: `research/on-policy-distillation/experiments/training-verification/verification-spike.md`.
+
+**Future direction**: Test-time scaling via self-analysis loop — model iteratively analyzes its own rollouts and updates. See `research/on-policy-distillation/research-notes/test-time-scaling-idea.md`.
 
 ## Architecture: `prepare_teacher_context` Contract
 

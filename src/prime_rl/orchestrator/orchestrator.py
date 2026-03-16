@@ -78,6 +78,9 @@ def _get_prepare_teacher_context(env_ids: list[str]):
 
     Returns a dict mapping env_id -> prepare_teacher_context callable.
     Only includes envs that actually provide the function.
+
+    Contract: prepare_teacher_context(rollouts: list[dict]) -> None
+    Mutates rollout info in place to set/update teacher_context.
     """
     import importlib
 
@@ -90,16 +93,8 @@ def _get_prepare_teacher_context(env_ids: list[str]):
             if fn is not None:
                 env_preparers[env_id] = fn
                 _logger.info(f"Found prepare_teacher_context for '{env_id}'")
-            else:
-                _logger.warning(
-                    f"Analyzer configured but '{env_id}' does not provide prepare_teacher_context — "
-                    f"teacher_context will not be updated for this env"
-                )
         except ImportError:
-            _logger.warning(
-                f"Analyzer configured but '{env_id}' module not importable — "
-                f"teacher_context will not be updated for this env"
-            )
+            pass
     return env_preparers
 
 
@@ -247,8 +242,8 @@ async def orchestrate(config: OrchestratorConfig):
         map_kwargs=dict(writer_batch_size=1),  # set defensively to not error on map operations on large datasets
     )
 
-    # Discover env-specific prepare_teacher_context functions (if analyzer is configured)
-    teacher_context_preparers = _get_prepare_teacher_context(env_ids) if config.analyzer else {}
+    # Discover env-specific prepare_teacher_context functions
+    teacher_context_preparers = _get_prepare_teacher_context(env_ids)
 
     train_env_addresses = []
     env_processes: list[mp.Process] = []
@@ -282,13 +277,13 @@ async def orchestrate(config: OrchestratorConfig):
         env.env_client = env_client
 
     if config.eval:
-        env_ids = [strip_env_version(env.id) for env in config.eval.env]
-        eval_envs = [vf.load_environment(env_id, **env.args) for env_id, env in zip(env_ids, config.eval.env)]
-        eval_env_names = [env.name or env_id for env_id, env in zip(env_ids, config.eval.env)]
+        eval_env_ids = [strip_env_version(env.id) for env in config.eval.env]
+        eval_envs = [vf.load_environment(env_id, **env.args) for env_id, env in zip(eval_env_ids, config.eval.env)]
+        eval_env_names = [env.name or env_id for env_id, env in zip(eval_env_ids, config.eval.env)]
         eval_sampling_args = get_eval_sampling_args(config.eval.sampling)
         eval_env_addresses = []
 
-        for env_id, env, eval_env_name in zip(env_ids, config.eval.env, eval_env_names):
+        for env_id, env, eval_env_name in zip(eval_env_ids, config.eval.env, eval_env_names):
             if env.address is None:
                 address, process = spawn_env_server(
                     env_id=env_id,
@@ -619,10 +614,9 @@ async def orchestrate(config: OrchestratorConfig):
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
-            # Prepare teacher context via env-specific or default function
-            if config.analyzer and teacher_context_preparers:
-                logger.info(f"Preparing teacher context for {len(train_rollouts)} rollouts using {config.analyzer.model}")
-                analyzer_start = time.perf_counter()
+            # Prepare teacher context via env-specific functions (if any env provides one)
+            if teacher_context_preparers:
+                prep_start = time.perf_counter()
 
                 # Group rollouts by env for env-specific preparation
                 env_name_to_id = dict(zip(train_env_names, env_ids))
@@ -631,16 +625,16 @@ async def orchestrate(config: OrchestratorConfig):
                     env_id = env_name_to_id.get(rollout["task"], env_ids[0])
                     rollouts_by_env.setdefault(env_id, []).append(rollout)
 
-                # Call env-specific prepare_teacher_context for each group
                 for env_id, env_rollouts in rollouts_by_env.items():
                     preparer = teacher_context_preparers.get(env_id)
                     if preparer is not None:
-                        await preparer(config.analyzer, env_rollouts)
+                        preparer(env_rollouts)
 
-                analyzer_time = time.perf_counter() - analyzer_start
-                logger.info(f"Prepared teacher context for {len(train_rollouts)} rollouts in {analyzer_time:.1f}s")
+                prep_time = time.perf_counter() - prep_start
+                logger.info(f"Prepared teacher context for {len(train_rollouts)} rollouts in {prep_time:.1f}s")
+
             # Legacy: generate deliberative analyses using teacher model if enabled
-            elif config.teacher_model.deliberative:
+            if not teacher_context_preparers and config.teacher_model.deliberative:
                 logger.info(f"Generating deliberative analyses for {len(train_rollouts)} rollouts")
                 delib_start = time.perf_counter()
                 analyses = await generate_deliberative_analyses(

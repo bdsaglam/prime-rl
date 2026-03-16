@@ -1,6 +1,23 @@
 # Gap Analysis: Signal Measurement vs Training Results
 
-## The Problem
+## Resolution (2026-03-12)
+
+**Hypothesis #1 (cross-model gap dominates) confirmed.** Self-teacher experiments prove it:
+
+| Experiment | Teacher | PI | Heldout Δ | Train Δ | Grad Norms |
+|------------|---------|-----|-----------|---------|------------|
+| C: Cross-teacher baseline | 32B | answer_only | +4.3% | +3.4% | 0.04-0.05 |
+| D: Cross-teacher deliberative | 32B | deliberative | inconclusive | inconclusive | 0.06-0.08 |
+| F: Self-teacher baseline | 8B | answer_only | **-6.3%** | **0%** | 0.006-0.014 |
+| G: Self-teacher deliberative | 8B | deliberative | **+4.3%** | **+6.9%** | **0.031-0.052** |
+
+Self-teacher baseline (F) = null baseline (no learning). Deliberative self-teacher (G) = **learning where none existed**. The PI signal IS real — it was just invisible in cross-teacher because the model gap dominates.
+
+Full results: `verification-spike.md`
+
+---
+
+## Original Problem (pre-resolution)
 
 Signal measurement (FINDINGS.md) showed blind deliberative |KL| = 0.075 beats answer_ref |KL| = 0.063 by 19%. But in training:
 - Baseline v2 (answer_only): mismatch KL = 0.0007 → 0.0009 over 20 steps

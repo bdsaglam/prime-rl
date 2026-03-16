@@ -1,0 +1,124 @@
+# Reflection-in-Sequence: Self-Teacher OPD v5
+# 8B student + 8B self-teacher with multi-turn reflection
+# Changes from v4: free-form reflection (no structured format), higher LR, larger train set
+# Train on aimo-validation-aime (90 problems), eval on AIME 2025 (30 problems)
+# Pure OPD (adv_tau=0, teacher_tau=1)
+# 4x A100 80GB: 1 train + 2 infer + 1 teacher
+
+max_steps = 40
+seq_len = 32768
+output_dir = "outputs/aime-mt-reflection-pi-8b-v5"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 2
+num_teacher_gpus = 1
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "aime-opd"
+name = "reflection-pi-self-teacher-8b-v5"
+
+[ckpt]
+interval = 20
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 1.0
+adv_tau = 0.0          # Pure OPD — no GRPO reward signal
+
+[trainer.optim]
+lr = 3e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+[orchestrator.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+# Train on aimo-validation-aime (90 historical AIME problems)
+[[orchestrator.env]]
+id = "aime_mt"
+name = "aime-mt"
+args = { dataset_name = "aimo-validation-aime", student_pi = "binary", reflection_style = "open" }
+
+[orchestrator.eval]
+interval = 10
+eval_base_model = true
+rollouts_per_example = 4
+
+# Eval on AIME 2025 (fully heldout — never seen during training)
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-2025"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples = 30 }
+
+# Eval on a subset of training data for overfitting check
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-train"
+args = { dataset_name = "aimo-validation-aime", eval_dataset = "aimo-validation-aime", num_eval_examples = 30 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.eval.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- Teacher Config (8B self-teacher) ---
+[orchestrator.teacher_model]
+max_model_len = 32768
+use_tito = false
+
+[orchestrator.teacher_model.chat_template_kwargs]
+enable_thinking = false
+
+# --- Student Inference (8B, 2 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
+
+# --- Teacher Inference (8B self-teacher, 1 GPU) ---
+[teacher_inference]
+gpu_memory_utilization = 0.9
+
+[teacher_inference.server]
+port = 8001
+
+[teacher_inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"

@@ -2,9 +2,15 @@
 
 Research docs for on-policy distillation (OPD) applied to reasoning tasks (AIME math, ARC-AGI).
 
-## Key Result: Deliberative Teaching
+## Research Hypothesis
 
-A teacher model that first reasons about a student's rollout before scoring it produces **19% stronger learning signal** than standard OPD with oracle PI (answer + reference solution) -- with zero external knowledge. See [FINDINGS.md](experiments/opd-signal/FINDINGS.md) for the full results.
+**Agent experiences contain rich learning signal extractable through reflection.** Standard OPD uses static labels (answer, ref solution, peer rollout). We show that structured analysis of student reasoning produces dramatically more precise learning signal — d=2.23 for structured reflection vs d=0.84 for answer-only lookup.
+
+See [`hypothesis/README.md`](hypothesis/README.md) for the full thesis, evidence, and research directions.
+
+## Key Result: Structured Analysis as PI
+
+Structured reflection (short error classification) outperforms all static PI types and verbose analysis. Prompt style matters more than analysis model size or PI content. See [`research-notes/sdpo-placement-pi-content-results.md`](research-notes/sdpo-placement-pi-content-results.md) for full results.
 
 ---
 
@@ -66,6 +72,9 @@ Conceptual docs and design explorations in [`research-notes/`](research-notes/).
 | [opd-concepts.md](research-notes/opd-concepts.md) | OPD tutorial. Core mechanism, GKD foundation, all self-distillation variants, decision tree. |
 | [multi-lens-teacher-scoring.md](research-notes/multi-lens-teacher-scoring.md) | Multi-lens teacher scoring design exploration. |
 | [open-questions.md](research-notes/open-questions.md) | Fundamental questions about OPD for reasoning tasks: exploration problem, teacher confidence, multi-turn trajectories. |
+| [self-distillation-papers-review.md](research-notes/self-distillation-papers-review.md) | Review of SDFT, SDPO, User Interactions papers — PI types, placement strategies, what we adopted. |
+| [sdpo-placement-pi-content-results.md](research-notes/sdpo-placement-pi-content-results.md) | **Comprehensive signal results**: SDPO placement, PI content comparison, sibling analysis, analysis prompt variants. Key finding: structured analysis d=1.74. |
+| [test-time-scaling-idea.md](research-notes/test-time-scaling-idea.md) | Future direction: self-analysis loop for test-time scaling without external labels. |
 
 ---
 
@@ -105,6 +114,15 @@ Key papers:
 ```
 research/on-policy-distillation/
 ├── README.md                          # This file
+├── hypothesis/
+│   ├── README.md                      # Core thesis, evidence, research directions
+│   └── tangents/                      # Research direction stubs
+│       ├── multi-pi.md                # Multiple targeted analyses as PI
+│       ├── test-time-scaling.md       # Self-analysis loop without labels
+│       ├── success-reflection.md      # Learning from correct rollouts
+│       ├── cross-experience.md        # Cross-problem pattern connections
+│       ├── optimal-analysis.md        # Search over analysis space
+│       └── learning-to-teach.md       # Meta-learning the analyzer
 ├── experiments/
 │   ├── opd-signal/                    # Signal measurement (main contribution)
 │   │   ├── FINDINGS.md                # Full results: deliberative teaching, multi-lens, placement
@@ -122,7 +140,10 @@ research/on-policy-distillation/
 ├── research-notes/                    # Conceptual docs
 │   ├── opd-concepts.md                # OPD tutorial and variants
 │   ├── multi-lens-teacher-scoring.md  # Multi-lens design exploration
-│   └── open-questions.md              # Fundamental research questions
+│   ├── open-questions.md              # Fundamental research questions
+│   ├── self-distillation-papers-review.md  # SDFT/SDPO/User Interactions review
+│   ├── sdpo-placement-pi-content-results.md  # Signal results + analysis variants
+│   └── test-time-scaling-idea.md      # Self-analysis loop idea
 ├── implementation-notes/              # Framework and setup docs
 │   ├── prime-rl-implementation-notes.md
 │   ├── prime-rl-opd-implementation.md

@@ -1,13 +1,12 @@
-# Verification v2: Cross-Teacher OPD with Analyzer (Gemini 3 Flash)
-# Train on AIME 2025 problems 0-21 (harder), eval on 22-29 (non-overlapping)
-# 8B student + 32B local teacher, pure OPD, bs=32
-# Analyzer (Gemini 3 Flash) generates rich analysis of student rollouts.
-# Teacher (32B) is conditioned on the analysis for logprob computation.
-# 4x A100 80GB: 1 train + 2 infer (student 8B) + 1 teacher (32B)
+# Verification v2: Self-Teacher OPD Baseline (answer_only PI)
+# 8B student + 8B self-teacher — isolates PI effect by removing cross-model gap.
+# Train on AIME 2025 problems 0-21, eval on 22-29 (non-overlapping)
+# Pure OPD (adv_tau=0, teacher_tau=1)
+# 4x A100 80GB: 1 train + 2 infer + 1 teacher
 
 max_steps = 20
 seq_len = 32768
-output_dir = "outputs/aime-verify-analyzer-v2"
+output_dir = "outputs/aime-verify-self-teacher-v2"
 
 [deployment]
 num_train_gpus = 1
@@ -19,7 +18,7 @@ name = "willcb/Qwen3-8B"
 
 [wandb]
 project = "aime-opd"
-name = "verify-analyzer-v2"
+name = "verify-self-teacher-v2"
 
 [ckpt]
 interval = 10
@@ -56,6 +55,9 @@ max_concurrent = 16
 temperature = 1.0
 max_tokens = 31768
 
+[orchestrator.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
 # Train on AIME 2025 problems 0-21 (22 problems)
 [[orchestrator.env]]
 id = "aime"
@@ -82,39 +84,39 @@ args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples
 temperature = 0.6
 max_tokens = 31000
 
+[orchestrator.eval.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
 [orchestrator.wandb.log_extras]
 samples = true
 distributions = true
 interval = 5
 
-# --- Analyzer (Gemini 3 Flash via litellm) ---
-[orchestrator.analyzer]
-model = "vertex_ai/gemini-2.5-pro"
-max_tokens = 65536
-temperature = 0.3
-max_concurrent = 16
-
-# --- Teacher (32B, local, logprobs only — auto-configured by num_teacher_gpus) ---
+# --- Teacher Model Config (8B self-teacher, answer_only PI) ---
 [orchestrator.teacher_model]
 max_model_len = 32768
+use_tito = false
 
-[orchestrator.teacher_model.model]
-name = "willcb/Qwen3-32B"
-
-# --- Teacher Inference (32B, 1 GPU) ---
-[teacher_inference.server]
-port = 8001
-
-[teacher_inference.model]
-name = "willcb/Qwen3-32B"
-max_model_len = 32768
-dtype = "bfloat16"
+[orchestrator.teacher_model.chat_template_kwargs]
+enable_thinking = false
 
 # --- Student Inference (8B, 2 GPUs) ---
 [inference]
 gpu_memory_utilization = 0.85
 
 [inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
+
+# --- Teacher Inference (8B self-teacher, 1 GPU) ---
+[teacher_inference]
+gpu_memory_utilization = 0.9
+
+[teacher_inference.server]
+port = 8001
+
+[teacher_inference.model]
 name = "willcb/Qwen3-8B"
 max_model_len = 32768
 dtype = "bfloat16"

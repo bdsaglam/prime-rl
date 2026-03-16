@@ -151,11 +151,11 @@ def build_teacher_prompt_ids(
     tokenizer,
     chat_template_kwargs: dict | None = None,
 ) -> list[int]:
-    """Build teacher prompt tokens with privileged info appended to the last user message.
+    """Build teacher prompt tokens with privileged info appended to the first user message.
 
-    Following SDPO's approach, PI is placed in the user message immediately before
-    the assistant generation marker, keeping it close to the response tokens the
-    teacher will score.
+    Following SDPO/SDFT, PI is appended to the user message containing the problem,
+    then followed by "Correctly solve the original question." The system message
+    is left unchanged.
 
     Args:
         messages: Original OpenAI-format chat messages from the rollout.
@@ -168,8 +168,8 @@ def build_teacher_prompt_ids(
     """
     modified = copy.deepcopy(messages)
 
-    # Find the last user message and append PI to it
-    for msg in reversed(modified):
+    # Find the first user message (the problem) and append PI
+    for msg in modified:
         if msg["role"] == "user":
             if isinstance(msg["content"], str):
                 msg["content"] += (
@@ -228,8 +228,10 @@ async def generate_deliberative_analyses(
         client = setup_openai_client(client_config)
 
         # Extract problem and student response from rollout
-        trajectory = rollout["trajectory"]
-        messages = trajectory[0]["prompt"]
+        trajectory = rollout.get("trajectory", [])
+        if not trajectory:
+            return ""
+        messages = trajectory[0].get("prompt", [])
 
         # Find the user message (problem)
         problem_text = ""
