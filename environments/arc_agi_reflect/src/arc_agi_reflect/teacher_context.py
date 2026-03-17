@@ -1,18 +1,17 @@
 """ARC-AGI Reflect teacher context preparation for on-policy distillation.
 
-For ARC-AGI, the teacher PI is simpler than AIME since the answer is a grid:
-- Correct rollouts: keep static PI (expected output grids)
-- Incorrect rollouts: provide expected output + per-challenge accuracy breakdown
+For ARC-AGI, the teacher PI includes:
+- Expected output grids (from dataset)
+- Student's reflection text (from the reflection turn)
+- A correct sibling solution (if available in the batch)
 
-The student already sees the expected output in the reflection prompt (by design —
-"going from problem to answer is the challenging part"). The teacher gets richer
-context about which specific cells/regions were wrong.
+The student already sees execution feedback + expected output in the reflection
+prompt. The teacher sees the same PLUS the student's own reflection and a correct
+sibling, giving it richer context for scoring.
 """
 
 import json
 import logging
-
-from prime_rl.configs.orchestrator import AnalyzerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,41 +27,95 @@ def _get_info(rollout: dict) -> dict:
     return info if isinstance(info, dict) else {}
 
 
-async def prepare_teacher_context(
-    analyzer_config: AnalyzerConfig,
-    rollouts: list[dict],
-) -> list[dict]:
+def _extract_text(completion) -> str:
+    """Extract text content from a completion."""
+    if isinstance(completion, str):
+        return completion
+    if isinstance(completion, list):
+        parts = []
+        for msg in completion:
+            if isinstance(msg, dict):
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    for p in content:
+                        if isinstance(p, dict):
+                            parts.append(p.get("text", str(p)))
+                        elif isinstance(p, str):
+                            parts.append(p)
+        return "\n".join(parts)
+    return str(completion)
+
+
+def prepare_teacher_context(rollouts: list[dict]) -> None:
     """Prepare teacher context for ARC-AGI Reflect rollouts.
 
-    Uses static PI only (no LLM call needed) since ARC-AGI answers are grids
-    and the teacher context is already rich enough:
-    - Expected output grids (already in teacher_context from data.py)
-    - For incorrect rollouts: the teacher also knows cell-level accuracy
+    Assembles PI from:
+    1. Expected output grids (from dataset info)
+    2. Student's reflection (last trajectory step completion)
+    3. Correct sibling solution (if available)
 
-    No external LLM calls are needed — this is pure postprocessing.
+    Mutates rollout info in place.
     """
-    num_correct = 0
-    num_incorrect = 0
-
+    # Group by example_id for sibling matching
+    by_example: dict[str, list[dict]] = {}
     for rollout in rollouts:
-        if rollout.get("reward", 0) == 1.0:
-            num_correct += 1
-            continue
+        eid = rollout.get("example_id", "")
+        by_example.setdefault(eid, []).append(rollout)
 
-        info = _get_info(rollout)
-        teacher_context = info.get("teacher_context", "")
+    num_enriched = 0
 
-        # Teacher context already contains expected outputs from data.py.
-        # We keep it as-is — the info asymmetry comes from the student
-        # only seeing binary + expected in the reflection prompt, while
-        # the teacher sees this BEFORE scoring the entire sequence.
-        if teacher_context:
-            num_incorrect += 1
+    for eid, group in by_example.items():
+        # Find a correct sibling's code solution (if any)
+        correct_solution = None
+        for r in group:
+            if r.get("reward", 0) > 0:
+                traj = r.get("trajectory", [])
+                # Get all assistant turns except the last (reflection)
+                solution_parts = []
+                for step in traj[:-1] if len(traj) > 1 else traj:
+                    comp = step.get("completion")
+                    if comp:
+                        text = _extract_text(comp)
+                        if text.strip():
+                            solution_parts.append(text)
+                if solution_parts:
+                    correct_solution = "\n".join(solution_parts)
+                    break
 
-    if num_correct > 0:
-        logger.info(
-            f"ARC-AGI Reflect: {num_correct}/{len(rollouts)} correct, "
-            f"{num_incorrect}/{len(rollouts)} incorrect (using static PI)"
-        )
+        for rollout in group:
+            info = _get_info(rollout)
 
-    return rollouts
+            # Start with existing teacher_context (expected outputs from data.py)
+            base_context = info.get("teacher_context", "")
+
+            # Extract student's reflection (last trajectory step)
+            trajectory = rollout.get("trajectory", [])
+            reflection = ""
+            if len(trajectory) >= 2:
+                last_step = trajectory[-1]
+                comp = last_step.get("completion")
+                if comp:
+                    reflection = _extract_text(comp)
+
+            # Build enriched teacher context
+            parts = []
+            if base_context:
+                parts.append(base_context)
+
+            if reflection:
+                parts.append(f"Your reflection on your previous attempt:\n{reflection}")
+
+            # Add correct sibling for incorrect rollouts
+            if correct_solution and rollout.get("reward", 0) <= 0:
+                parts.append(f"A correct solution to this problem:\n{correct_solution}")
+
+            if parts:
+                info["teacher_context"] = "\n\n".join(parts)
+                rollout["info"] = info
+                num_enriched += 1
+
+    logger.info(
+        f"ARC-AGI Reflect: enriched {num_enriched}/{len(rollouts)} rollouts with teacher context"
+    )

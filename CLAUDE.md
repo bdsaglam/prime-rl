@@ -1,32 +1,35 @@
-# prime-rl: On-Policy Distillation Research
+# prime-rl: Reflection-Augmented On-Policy Distillation
 
-Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) for research on adaptive privileged information (PI) in on-policy distillation (OPD).
+Fork of [PrimeIntellect/prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
 
-## Research Focus
+## Core Research Hypothesis
 
-**Adaptive PI for OPD**: Standard OPD gives the teacher a static advantage (answer + reference solution). We explore *deliberative teaching* — the teacher generates an analysis of the student's specific mistakes before scoring, creating stronger, more targeted per-token feedback.
+Agent trajectories contain rich learning signal extractable through reflection. Analogous to human introspection: we reflect on experiences (successes and failures), distill lessons, and update behavior — even without external reward. Our method: student solves → gets feedback → reflects in structured format → teacher (with PI) scores the full sequence including reflection tokens. The reflection tokens carry 2-7x stronger OPD signal than solution tokens.
 
-**Key signal measurement results**: Analysis prompt style matters dramatically — structured format (short VERDICT/ERROR_TYPE/ERROR_LOCATION) achieves d=1.74 (informed) vs d=0.25 for verbose. |KL| and discrimination are inversely correlated: shorter analysis = more precise signal. Sibling rollout (SDPO-style) remains strongest single PI at d=1.02. Details: `research/on-policy-distillation/research-notes/sdpo-placement-pi-content-results.md`
+## Current Task: Debug Training Pipeline
 
-**Analysis style**: `AnalyzerConfig.analysis_style` controls prompt format. Default is `"structured"` (best discrimination). Options: structured, directive, verbose, error_point. AIME env (`environments/aime/src/aime/teacher_context.py`) selects informed/blind variant based on whether reference solution is available.
+**Problem**: Signal measurement shows strong discrimination (d=0.85-4.67 on reflection tokens) but training shows near-zero mismatch KL (~0.0003). Something is broken between measurement and training.
 
-**Training validation (2026-03-12)**: Deliberative PI confirmed working in self-teacher (8B→8B) setting. Heldout +4.3%, train +6.9%, grad norms 3-5x baseline — while answer-only self-teacher shows zero learning. Cross-model gap masks PI in cross-teacher setups. Details: `research/on-policy-distillation/experiments/training-verification/verification-spike.md`.
+**Debugging plan**: `research/on-policy-distillation/experiments/training-debug/plan.md`
 
-**Future direction**: Test-time scaling via self-analysis loop — model iteratively analyzes its own rollouts and updates. See `research/on-policy-distillation/research-notes/test-time-scaling-idea.md`.
+**Key suspects**:
+1. PI not reaching teacher (verify teacher prompts contain PI)
+2. Teacher logprobs not different from student (verify per-token KL on known-good batches)
+3. Loss masking killing weak signal (compare with SDPO implementation)
+4. Open reflection format (NEGATIVE d) — must use structured
 
-## Architecture: `prepare_teacher_context` Contract
+## How OPD Works
 
-Each environment owns its teacher context preparation. The orchestrator discovers `prepare_teacher_context` via importlib:
+1. Student generates rollouts
+2. `prepare_teacher_context` assembles PI per rollout (env-specific)
+3. Teacher scores same token sequence via prefill, PI injected into first user message
+4. Loss = `adv_tau * GRPO_advantage + teacher_tau * (teacher_logprobs - student_logprobs)`
 
-```python
-# Contract (implemented per env, e.g. environments/aime/src/aime/teacher_context.py)
-async def prepare_teacher_context(analyzer_config: AnalyzerConfig, rollouts: list[dict]) -> list[dict]
-```
-
-- Env decides what PI to generate based on available data (ref solution, answer, rollout quality)
-- Correct rollouts can be skipped (no LLM call needed)
-- Uses litellm for external LLM calls (Gemini, etc.)
-- No shared analyzer module in prime-rl — envs own this entirely
+Key code:
+- Loss: `src/prime_rl/trainer/rl/loss.py`
+- Teacher logprobs + PI injection: `src/prime_rl/orchestrator/utils.py` (`build_teacher_prompt_ids`, `compute_teacher_logprobs`)
+- Orchestrator: `src/prime_rl/orchestrator/orchestrator.py`
+- PI contract: `def prepare_teacher_context(rollouts: list[dict]) -> None` (per env, discovered via importlib)
 
 ## Key Commands
 
@@ -38,57 +41,22 @@ python -m prime_rl.entrypoints.rl @ configs/aime/opd-self-teacher-8b.toml
 prime eval run aime -a '{"dataset_name":"aime2025"}' -n 8 -r 4 -m MODEL -b URL -t MAX_TOKENS -T 0.6 --skip-upload -d
 
 # Logs
-tail -F outputs/logs/orchestrator.stdout
+tail -F outputs/<run>/logs/orchestrator.stdout
 ```
-
-## How OPD Works
-
-1. Student generates rollouts on training problems
-2. (Optional) `prepare_teacher_context` generates adaptive PI per rollout
-3. Teacher scores the same token sequence via prefill (no generation), with PI injected into prompt
-4. Loss = `adv_tau * GRPO_advantage + teacher_tau * (teacher_logprobs - student_logprobs)`
-
-Key code:
-- Loss: `src/prime_rl/trainer/rl/loss.py`
-- Teacher logprobs + PI injection: `src/prime_rl/orchestrator/utils.py`
-- Orchestrator (env dispatch): `src/prime_rl/orchestrator/orchestrator.py`
-- Analyzer config: `src/prime_rl/configs/orchestrator.py`
-
-## Repository Structure
-
-```
-prime-rl/
-├── src/prime_rl/
-│   ├── configs/              # Pydantic config models
-│   ├── entrypoints/rl.py     # Main entry — launches all processes
-│   ├── trainer/rl/           # Training loop + loss function
-│   ├── orchestrator/         # Orchestrator loop, teacher logprobs, env dispatch
-│   ├── inference/            # vLLM inference server
-│   └── transport/types.py    # TrainingSample, TrainingBatch structs
-├── environments/
-│   ├── aime/                 # AIME math competition env + teacher_context.py
-│   └── arc_agi/              # ARC-AGI REPL environment
-├── configs/
-│   ├── aime/                 # AIME training configs (self-teacher, deliberative, etc.)
-│   └── arc_agi/              # ARC-AGI training configs
-├── research/                 # Organized research docs, papers, notes
-└── tmp/on-policy-distillation/  # Active experiment logs and analysis
-```
-
-## Research Documentation
-
-See `research/on-policy-distillation/README.md` for the full index. Key docs:
-
-- **Signal measurement**: `research/on-policy-distillation/experiments/opd-signal/FINDINGS.md`
-- **Gap analysis**: `research/on-policy-distillation/experiments/training-verification/gap-analysis.md`
-- **Pivot strategy**: `research/on-policy-distillation/experiments/training-verification/pivot-strategy.md`
-- **Training management**: `research/on-policy-distillation/experiments/prime-rl-training-management-guide.md`
-- **Literature reviews**: `research/on-policy-distillation/experiments/literature-review-{1,2}.md`
 
 ## Training Lessons
 
-- **Qwen3**: Disable thinking mode via `chat_template_kwargs = {enable_thinking = false}`
-- **OOM with 32K**: Use `fused_lm_head_chunk_size = 8192` in `[trainer.model]`
-- **16K too short for AIME**: 80% truncation. 32K gives 20% truncation
-- **Check first 10 steps**: truncation rate + mismatch_kl are early health signals
-- **Kill zombie vLLM**: Always kill old vLLM processes before re-launching
+- **Qwen3**: `chat_template_kwargs = {enable_thinking = false}`
+- **OOM with 32K**: `fused_lm_head_chunk_size = 8192`
+- **ARC sandbox**: `timeout = 30` to prevent infinite loop hangs
+- **32B OOM on 4xA100 80GB**: Infeasible (77GB/shard with TP=2)
+- **Health check**: truncation + mismatch_kl in first 10 steps; entropy > 0.5 = diverging
+- **Kill zombie vLLM** before re-launch
+
+## Documentation Index
+
+- **Signal measurement results**: `research/on-policy-distillation/experiments/opd-signal/reflection-in-seq-results.md`
+- **Training experiments**: `research/on-policy-distillation/experiments/training-verification/`
+- **Training debug plan**: `research/on-policy-distillation/experiments/training-debug/plan.md`
+- **Full research index**: `research/on-policy-distillation/README.md`
+- **Detailed findings & history**: See memory files in `.claude/projects/*/memory/`
