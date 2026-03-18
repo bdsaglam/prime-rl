@@ -628,13 +628,20 @@ async def orchestrate(config: OrchestratorConfig):
                 for env_id, env_rollouts in rollouts_by_env.items():
                     preparer = teacher_context_preparers.get(env_id)
                     if preparer is not None:
-                        preparer(env_rollouts)
+                        try:
+                            result = preparer(env_rollouts)
+                            # Handle async prepare_teacher_context functions
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except TypeError:
+                            # Signature mismatch (e.g., function expects extra args)
+                            logger.warning(f"prepare_teacher_context for '{env_id}' failed — signature mismatch, skipping")
 
                 prep_time = time.perf_counter() - prep_start
                 logger.info(f"Prepared teacher context for {len(train_rollouts)} rollouts in {prep_time:.1f}s")
 
             # Legacy: generate deliberative analyses using teacher model if enabled
-            if not teacher_context_preparers and config.teacher_model.deliberative:
+            if config.teacher_model.deliberative:
                 logger.info(f"Generating deliberative analyses for {len(train_rollouts)} rollouts")
                 delib_start = time.perf_counter()
                 analyses = await generate_deliberative_analyses(

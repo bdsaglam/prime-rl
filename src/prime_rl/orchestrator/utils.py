@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import re
 import time
 from itertools import cycle
@@ -183,15 +184,16 @@ def build_teacher_prompt_ids(
     )
 
 
-DEFAULT_DELIBERATIVE_PROMPT = """You are an expert math teacher analyzing a student's work.
-Carefully read the problem and the student's attempt below. You do NOT know the correct answer.
-Your job is to analyze the student's reasoning process in depth:
-1. What approach/strategy did the student use?
-2. Trace through the key reasoning steps — are they logically valid?
-3. Identify any specific steps where errors might have occurred and why.
-4. Assess the overall quality: Is the reasoning sound? Are there gaps?
-5. What should the student have done differently?
-Be specific about which steps are good and which are problematic."""
+DEFAULT_DELIBERATIVE_PROMPT = """You are a math grading system. Analyze the student's attempt against the reference information and produce a SHORT, STRUCTURED error report.
+
+Format your response EXACTLY as:
+VERDICT: [correct/incorrect/partially_correct]
+ERROR_TYPE: [computational/conceptual/approach/notation/none]
+ERROR_LOCATION: [which step or reasoning segment contains the first error]
+WHAT_WENT_WRONG: [one sentence describing the error]
+SHOULD_HAVE: [one sentence describing what the correct step would be]
+
+Be precise and concise. No extra commentary."""
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
@@ -225,6 +227,15 @@ async def generate_deliberative_analyses(
         client_config: vf.ClientConfig,
         rollout: dict,
     ) -> str:
+        # Skip LLM call for correct rollouts — use static PI
+        answer = rollout.get("answer", "")
+        reward = rollout.get("reward", 0)
+        if reward == 1.0:
+            analysis = "VERDICT: correct\nERROR_TYPE: none\nERROR_LOCATION: none\nWHAT_WENT_WRONG: none\nSHOULD_HAVE: Student's solution is correct."
+            if answer:
+                analysis = f"The correct answer is: {answer}\n\n{analysis}"
+            return analysis
+
         client = setup_openai_client(client_config)
 
         # Extract problem and student response from rollout
@@ -251,17 +262,37 @@ async def generate_deliberative_analyses(
                     if isinstance(content, str):
                         student_response += content + "\n"
 
+        # Extract answer and solution from rollout info (if available)
+        info = rollout.get("info", {})
+        if isinstance(info, str):
+            try:
+                info = json.loads(info)
+            except (json.JSONDecodeError, TypeError):
+                info = {}
+        answer = rollout.get("answer", "")
+        solution = info.get("solution", "")
+
+        # Build user message with reference info when available
+        user_parts = [f"Problem:\n{problem_text}"]
+        if answer:
+            user_parts.append(f"Correct answer: {answer}")
+        if solution:
+            user_parts.append(f"Reference solution:\n{solution}")
+        user_parts.append(f"Student's attempt:\n{student_response}")
+
+        user_content = "\n\n".join(user_parts)
+
         # Truncate student response to fit within context. We need room for:
         # system prompt + problem + framing + max_tokens for output.
         # Use conservative ratio of 2 chars/token to avoid exceeding context.
         overhead_tokens = 512  # system prompt, problem, chat template overhead
         input_budget_tokens = max_model_len - max_tokens - overhead_tokens
         input_budget_chars = max(1000, input_budget_tokens * 2)  # 2 chars/token = very conservative
-        if len(student_response) > input_budget_chars:
-            student_response = student_response[:input_budget_chars] + "\n[... truncated for context length ...]"
+        if len(user_content) > input_budget_chars:
+            user_content = user_content[:input_budget_chars] + "\n[... truncated for context length ...]"
 
         # Use conservative token estimate (2 chars/token) to cap max_tokens
-        estimated_input_tokens = (len(prompt) + len(problem_text) + len(student_response) + 200) // 2
+        estimated_input_tokens = (len(prompt) + len(user_content) + 200) // 2
         effective_max_tokens = min(max_tokens, max(256, max_model_len - estimated_input_tokens - 100))
 
         async with await get_semaphore():
@@ -269,7 +300,7 @@ async def generate_deliberative_analyses(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"Problem:\n{problem_text}\n\nStudent's attempt:\n{student_response}"},
+                    {"role": "user", "content": user_content},
                 ],
                 max_tokens=effective_max_tokens,
                 temperature=temperature,
@@ -277,7 +308,13 @@ async def generate_deliberative_analyses(
 
         analysis = response.choices[0].message.content or ""
         # Strip <think>...</think> from teacher's analysis — use only the substantive output
-        return _strip_think_tags(analysis)
+        analysis = _strip_think_tags(analysis)
+
+        # Prepend answer to analysis so teacher sees both during scoring
+        if answer:
+            analysis = f"The correct answer is: {answer}\n\n{analysis}"
+
+        return analysis
 
     return await asyncio.gather(*[
         _generate_single(client, rollout)
