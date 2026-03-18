@@ -1,0 +1,10 @@
+[project]
+name = "aime_sdpo"
+description = "AIME environment with SDPO-style teacher context (correct sibling + answer)"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

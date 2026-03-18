@@ -1,0 +1,101 @@
+# Ablation A: GRPO Only (No Teacher) on AIME 2025
+# 8B student, no teacher — pure RL baseline
+# Train on AIME 2025 (30 harder problems, ~72% solve rate)
+# Eval on AIME 2025 (in-distribution) + historical AIME (OOD)
+# 4x A100 80GB: 1 train + 3 infer (no teacher needed)
+
+max_steps = 50
+seq_len = 32768
+output_dir = "outputs/aime-ablation-A-grpo-only-2025"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 3
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "aime-opd"
+name = "ablation-A-grpo-only-2025"
+
+[ckpt]
+interval = 25
+
+# --- Trainer ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 0.0      # No teacher
+adv_tau = 1.0          # Pure GRPO
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+[orchestrator.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+# Train on AIME 2025 (30 problems, harder)
+[[orchestrator.env]]
+id = "aime"
+name = "aime"
+args = { dataset_name = "aime2025" }
+
+[orchestrator.eval]
+interval = 10
+rollouts_per_example = 4
+
+# Eval on AIME 2025 (in-distribution)
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-2025"
+args = { dataset_name = "aime2025", eval_dataset = "aime2025", num_eval_examples = 30 }
+
+# Eval on historical AIME (OOD generalization)
+[[orchestrator.eval.env]]
+id = "aime"
+name = "aime-eval-historical"
+args = { dataset_name = "aime2025", eval_dataset = "aimo-validation-aime", num_eval_examples = 30 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.eval.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- Student Inference (8B, 3 GPUs — no teacher needed) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"
