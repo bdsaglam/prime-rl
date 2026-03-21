@@ -1,0 +1,100 @@
+# Eval-only: Qwen3-8B base model on LiveCodeBench
+# Purpose: measure base solve rate before training
+# 4x A100 80GB: 1 train + 3 infer (no teacher)
+
+max_steps = 1
+seq_len = 32768
+output_dir = "outputs/lcb-eval-base-8b-v4-nothink"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 3
+
+[model]
+name = "willcb/Qwen3-8B"
+
+[wandb]
+project = "lcb-opd"
+name = "eval-base-8b"
+
+[ckpt]
+interval = 999
+
+# --- Trainer (dummy, no training) ---
+[trainer.model]
+fused_lm_head_chunk_size = 8192
+
+[trainer.model.lora]
+rank = 32
+alpha = 32
+dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.loss]
+teacher_tau = 0.0
+adv_tau = 1.0
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+# --- Orchestrator ---
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 4
+oversampling_factor = 2.0
+max_concurrent = 16
+
+[orchestrator.sampling]
+temperature = 1.0
+max_tokens = 31768
+
+[orchestrator.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+# Train env (needed even for max_steps=0, but won't actually train)
+[[orchestrator.env]]
+id = "livecodebench"
+name = "livecodebench"
+args = { train_cutoff = "2025-02-01", num_train_examples = 100 }
+
+[orchestrator.eval]
+interval = 1
+rollouts_per_example = 4
+
+# Eval on post-cutoff (OOD, 131 problems)
+[[orchestrator.eval.env]]
+id = "livecodebench"
+name = "lcb-eval-ood"
+args = { train_cutoff = "2025-02-01", eval_dataset = "livecodebench/code_generation_lite" }
+
+# Eval on training set sample (in-distribution, 50 problems)
+# Uses cutoff=2020 so is_eval filter (date >= cutoff) returns all problems, then take 50
+[[orchestrator.eval.env]]
+id = "livecodebench"
+name = "lcb-eval-train"
+args = { train_cutoff = "2020-01-01", eval_dataset = "livecodebench/code_generation_lite", num_eval_examples = 50 }
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_tokens = 31000
+
+[orchestrator.eval.sampling.extra_body]
+chat_template_kwargs = { enable_thinking = false }
+
+[orchestrator.wandb.log_extras]
+samples = true
+distributions = true
+interval = 5
+
+# --- Inference (8B, 3 GPUs) ---
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+name = "willcb/Qwen3-8B"
+max_model_len = 32768
+dtype = "bfloat16"

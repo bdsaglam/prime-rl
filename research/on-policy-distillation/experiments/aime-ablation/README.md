@@ -43,14 +43,13 @@ All use: adv_tau=1.0, teacher_tau=0.5 (B/C/D/E), lr=1e-5, batch_size=32
 - **Eval Avg@4 on AIME 2025**: OOD generalization
 - **Training reward**: Solve rate on training problems
 
-## Run Order (Automated Chain)
-1. **C** — running now on 90-problem set (deliberative OPD, exploratory)
-2. **D** — auto-launches after C (self-reflection OPD on AIME 2025, core hypothesis)
-3. **E** — auto-launches after D (SDPO-style OPD on AIME 2025)
-4. **B** — auto-launches after E (answer-only OPD on AIME 2025)
-5. **A** — auto-launches after B (GRPO only on AIME 2025)
-
-Automation: `launch-next.sh` (C→D), `launch-chain.sh` in tmux `chain` session (D→E→B→A)
+## Experiment Queue (manual launch)
+1. **C** — DONE (50/50, flat results on 90-problem set)
+2. **E** — partial (30/50, killed accidentally)
+3. **D** — DONE (50/50, negative result — degraded on AIME 2025)
+4. **B** — next to run
+5. **A** — after B
+6. **E** (restart) — optional, re-run to completion if needed
 
 ## Dataset Decision
 - 90-problem set (aimo-validation-aime): ~80% solve rate — too easy, little room for improvement
@@ -72,17 +71,31 @@ Automation: `launch-next.sh` (C→D), `launch-chain.sh` in tmux `chain` session 
 - Entropy: 0.24-0.31 (stable, no divergence)
 - Conclusion: Flat/noisy eval — confirms dataset is too easy
 
-### Config D: Self-Reflection OPD on AIME 2025 (NEXT)
-(pending — auto-launches after C)
+### Config D: Self-Reflection OPD on AIME 2025 (DONE, 50/50)
+| Step | AIME 2025 Avg@4 | AIME 2025 Pass@4 | Historical Avg@4 | Historical Pass@4 |
+|------|-----------------|-------------------|------------------|--------------------|
+| 0    | 0.683           | 0.800             | 0.725            | 0.833              |
+| 10   | 0.692           | 0.767             | 0.717            | 0.867              |
+| 20   | 0.683           | 0.767             | 0.700            | 0.800              |
+| 30   | 0.700           | 0.800             | 0.658            | 0.700              |
+| 40   | 0.650           | 0.800             | 0.675            | 0.800              |
+| 50   | 0.583           | 0.733             | 0.700            | 0.800              |
 
-### Config E: SDPO-style OPD on AIME 2025 (QUEUED)
-(pending — auto-launches after D)
+- teacher_kl: +0.001 to +0.049 (consistently positive, strong signal)
+- Entropy: 0.32-0.43 (stable, no divergence)
+- Completion length: shrinking 16K→13K over training
+- **Result: NEGATIVE.** AIME 2025 Avg@4 degraded from 0.683→0.583. Historical flat. Strong OPD signal did not translate to improved eval — model may be overfitting to reflection format at expense of solve quality.
+- W&B: https://wandb.ai/bdsaglam/aime-opd/runs/4unma528
 
-### Config B: Answer OPD on AIME 2025
-(pending — auto-launches after E)
+### Config E: SDPO-style OPD on AIME 2025 (PARTIAL, 30/50 — killed accidentally)
+- teacher_kl: -0.038 to +0.030, historical +3.3% at step 20
+- Run killed at step 30 due to tmux session cleanup
 
-### Config A: GRPO Only on AIME 2025
-(pending — auto-launches after B)
+### Config B: Answer OPD on AIME 2025 (QUEUED)
+Next to run.
+
+### Config A: GRPO Only on AIME 2025 (QUEUED)
+After B.
 
 ## Code Changes
 1. `train.py`: Added teacher_kl to stdout step message

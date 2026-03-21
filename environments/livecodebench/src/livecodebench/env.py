@@ -135,6 +135,17 @@ def _prepare_dataset(
         )
 
     ds = Dataset.from_list(rows)
+
+    # Cast string columns to large_string to avoid Arrow overflow
+    # (LCB questions can be very long with test cases embedded)
+    from datasets import Value
+
+    new_features = ds.features.copy()
+    for col in ds.column_names:
+        if ds.features[col].dtype == "string":
+            new_features[col] = Value("large_string")
+    ds = ds.cast(new_features)
+
     # Sort by question text for deterministic ordering
     ds = ds.sort("question")
     return ds
@@ -156,21 +167,28 @@ def _score_code(completion: Any, state: dict, **kwargs) -> float:
         info = json.loads(info)
         state["info"] = info  # replace string with parsed dict
 
-    # Extract completion text
+    # Extract completion text from state
     completion = state.get("completion", completion)
     if isinstance(completion, list):
         parts = []
         for msg in completion:
+            # Handle both dicts and Pydantic message objects (e.g. AssistantMessage)
             if isinstance(msg, dict):
                 content = msg.get("content", "")
-                if isinstance(content, str):
-                    parts.append(content)
-                elif isinstance(content, list):
-                    for p in content:
-                        if isinstance(p, dict):
-                            parts.append(p.get("text", str(p)))
-                        elif isinstance(p, str):
-                            parts.append(p)
+            elif hasattr(msg, "content"):
+                content = msg.content
+            else:
+                content = str(msg)
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for p in content:
+                    if isinstance(p, dict):
+                        parts.append(p.get("text", str(p)))
+                    elif hasattr(p, "text"):
+                        parts.append(p.text)
+                    elif isinstance(p, str):
+                        parts.append(p)
         completion_text = "\n".join(parts)
     else:
         completion_text = str(completion)

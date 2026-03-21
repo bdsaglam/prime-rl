@@ -1,7 +1,6 @@
 #!/bin/bash
-# Launch ablation runs D → E → B → A sequentially (all on AIME 2025)
-# D is launched by launch-next.sh after C finishes
-# This script launches E, B, A after D
+# Launch ablation runs sequentially (all on AIME 2025)
+# Current order: E (running) → D → B → A
 # Usage: started in tmux session 'chain'
 
 set -e
@@ -24,8 +23,8 @@ run_and_wait() {
     sleep 10
 }
 
-# Wait for D to finish (launched by launch-next.sh)
-echo "$(date): Waiting for ablation D to finish..."
+# Wait for E to finish (currently running)
+echo "$(date): Waiting for current run (E) to finish..."
 while true; do
     if ! pgrep -f "prime_rl.entrypoints.rl" > /dev/null 2>&1; then
         echo "$(date): No training process found."
@@ -38,11 +37,11 @@ done
 pkill -f "vllm.entrypoints" 2>/dev/null || true
 sleep 10
 
-# Run E: SDPO-style OPD on AIME 2025 (correct sibling + answer, no student attempt)
+# Run D: Self-Reflection OPD on AIME 2025 (core hypothesis)
 run_and_wait \
-    "configs/aime/ablation-E-sdpo-pi-2025.toml" \
-    "Ablation E: SDPO-style OPD (AIME 2025)" \
-    "outputs/aime-ablation-E-sdpo-pi-2025"
+    "configs/aime_mt/ablation-D-self-reflection-2025.toml" \
+    "Ablation D: Self-Reflection OPD (AIME 2025)" \
+    "outputs/aime-ablation-D-self-reflection-2025"
 
 # Run B: Answer-Only OPD on AIME 2025
 run_and_wait \

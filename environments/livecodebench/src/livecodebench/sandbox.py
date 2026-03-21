@@ -492,14 +492,67 @@ def extract_code(response: str) -> str | None:
     # Try python-specific blocks first
     python_blocks = re.findall(r"```python\s*\n(.*?)```", response, re.DOTALL)
     if python_blocks:
-        return python_blocks[-1].strip()
+        return _normalize_code(python_blocks[-1].strip())
 
     # Fall back to any code block
     blocks = re.findall(r"```\w*\n(.*?)```", response, re.DOTALL)
     if blocks:
-        return max(blocks, key=len).strip()
+        return _normalize_code(max(blocks, key=len).strip())
 
     return None
+
+
+def _normalize_code(code: str) -> str:
+    """Normalize LeetCode-style class methods to standalone functions.
+
+    Handles:
+    - class Solution: wrapper (dedent methods)
+    - self parameter in function signatures (strip it)
+    """
+    # Strip 'self' from function signatures (handles both class methods and bare methods)
+    code = re.sub(r'\(\s*self\s*,\s*', '(', code)
+    code = re.sub(r'\(\s*self\s*\)', '()', code)
+
+    # Unwrap class Solution: / class Solution(object): wrappers
+    try:
+        tree = ast.parse(code)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name.lower() in ('solution',):
+                # Extract methods from the class and dedent them
+                methods = []
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods.append(item)
+                if methods:
+                    lines = code.split('\n')
+                    # Find the class body and dedent it
+                    new_lines = []
+                    in_class = False
+                    class_indent = None
+                    for line in lines:
+                        stripped = line.lstrip()
+                        if stripped.startswith('class ') and 'Solution' in stripped:
+                            in_class = True
+                            continue
+                        if in_class:
+                            if not stripped:
+                                new_lines.append('')
+                                continue
+                            indent = len(line) - len(stripped)
+                            if class_indent is None:
+                                class_indent = indent
+                            if indent >= class_indent:
+                                new_lines.append(line[class_indent:])
+                            else:
+                                in_class = False
+                                new_lines.append(line)
+                        else:
+                            new_lines.append(line)
+                    return '\n'.join(new_lines)
+    except SyntaxError:
+        pass
+
+    return code
 
 
 # ---------------------------------------------------------------------------
