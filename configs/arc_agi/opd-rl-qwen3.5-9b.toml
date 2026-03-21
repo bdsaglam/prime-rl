@@ -8,17 +8,18 @@
 #     We override with qwen3.5-rl.jinja (keeps thinking but doesn't
 #     strip it from prior turns).
 #
-# GPU allocation (4x A100 80GB):
-#   GPUs 0-1: Student inference (9B, DP=2)
-#   GPU 2:    Trainer (LoRA r=32)
-#   GPU 3:    Teacher inference (27B, 1 GPU)
+# GPU allocation (3x A100 80GB, skipping GPU 1 — suspected hardware fault):
+#   Run with CUDA_VISIBLE_DEVICES=0,2,3
+#   GPU 0: Student inference (9B, 1 GPU)
+#   GPU 2: Trainer (LoRA r=32)
+#   GPU 3: Teacher inference (27B, 1 GPU)
 
 max_steps = 200
 seq_len = 32768
 
 [deployment]
 num_train_gpus = 1
-num_infer_gpus = 2
+num_infer_gpus = 1
 num_teacher_gpus = 1
 
 [model]
@@ -66,7 +67,7 @@ weight_decay = 0.0
 batch_size = 128
 rollouts_per_example = 16
 oversampling_factor = 2.0
-max_concurrent = 64
+max_concurrent = 16
 
 [orchestrator.sampling]
 temperature = 1.0
@@ -97,7 +98,7 @@ interval = 10
 
 # --- Inference (student: Qwen3.5-9B on 2 GPUs) ---
 [inference]
-gpu_memory_utilization = 0.90
+gpu_memory_utilization = 0.85
 
 [inference.model]
 name = "Qwen/Qwen3.5-9B"
@@ -124,6 +125,7 @@ name = "Qwen/Qwen3.5-27B"
 max_model_len = 32768
 dtype = "bfloat16"
 reasoning_parser = "qwen3"
+enforce_eager = true
 
 [teacher_inference.vllm_extra]
 language_model_only = true
